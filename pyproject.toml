@@ -7,6 +7,7 @@ dependencies = [
     "asyncpg>=0.32.0",
     "fastapi[standard]>=0.162.4",
     "pydantic-settings>=2.16.2",
+    "pyjwt[crypto]>=2.15.1",
     "sqlalchemy[asyncio]>=2.1.8",
 ]
 
@@ -26,3 +27,7 @@ select = ["E", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency style puts these calls in argument defaults by design
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "app.auth.security.require_role"]

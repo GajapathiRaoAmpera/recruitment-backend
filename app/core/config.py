@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     app_env: str = "dev"  # dev | test | prod
     database_url: str  # postgresql+asyncpg://user:pass@host:5432/db
+    supabase_url: str  # https://<project-ref>.supabase.co (not secret)
 
     @field_validator("database_url")
     @classmethod
