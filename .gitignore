@@ -3,3 +3,7 @@
 !.env.example
 .claude/settings.local.json
 .claude/skills/postgres/connections.json
+__pycache__/
+.venv/
+.pytest_cache/
+.ruff_cache/
