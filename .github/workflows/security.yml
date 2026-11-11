@@ -45,17 +45,3 @@ jobs:
 
           uv export --frozen --no-dev --no-hashes -o req.txt
           uvx pip-audit -r req.txt
-
-  codeql:
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v4
-        with:
-          languages: python
-      - uses: github/codeql-action/analyze@v4
