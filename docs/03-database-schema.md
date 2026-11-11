@@ -1,0 +1,240 @@
+# 03 — Database Schema (Supabase Postgres)
+
+This is the design. The first Alembic migration implements it verbatim; after that, **changes go in new migrations and this doc is updated in the same PR**.
+
+Added beyond the PDF table list: `round_candidates` (who is in which round, with what result) and `audit_logs` (NFR auditability). `users.id` = Supabase `auth.users.id`.
+
+```sql
+create extension if not exists pgcrypto;
+
+create type user_role       as enum ('hr', 'super_admin');
+create type drive_status    as enum ('draft', 'active', 'closed');
+create type round_type      as enum ('shortlist', 'aptitude', 'coding', 'ai_interview', 'technical', 'final');
+create type round_mode      as enum ('ai', 'manual', 'auto');
+create type round_status    as enum ('pending', 'active', 'skipped', 'completed');
+create type rc_status       as enum ('invited', 'in_progress', 'passed', 'failed', 'absent', 'selected', 'rejected');
+create type difficulty      as enum ('easy', 'medium', 'advanced');
+create type question_kind   as enum ('mcq', 'coding');
+create type attempt_status  as enum ('not_started', 'in_progress', 'locked', 'submitted', 'expired');
+
+create table users (
+  id          uuid primary key,                       -- = auth.users.id
+  email       text not null unique,
+  full_name   text not null,
+  role        user_role not null,
+  is_active   boolean not null default true,
+  created_at  timestamptz not null default now()
+);
+
+create table drives (
+  id          uuid primary key default gen_random_uuid(),
+  owner_id    uuid not null references users(id),
+  company     text not null,
+  campus      text not null,
+  role_title  text not null,
+  jd_text     text not null,
+  status      drive_status not null default 'draft',
+  created_at  timestamptz not null default now()
+);
+
+create table candidates (
+  id          uuid primary key default gen_random_uuid(),
+  drive_id    uuid not null references drives(id) on delete cascade,
+  student_id  text not null,
+  dob         date not null,
+  full_name   text not null,
+  email       text not null,
+  phone       text,
+  form_data   jsonb not null default '{}',             -- raw Google Form row
+  created_at  timestamptz not null default now(),
+  unique (drive_id, student_id)
+);
+
+create table resumes (
+  id             uuid primary key default gen_random_uuid(),
+  candidate_id   uuid not null unique references candidates(id) on delete cascade,
+  storage_path   text not null,                        -- Supabase Storage key
+  extracted_text text,
+  skills         text[] not null default '{}',
+  cgpa           numeric(4,2),
+  jd_match       numeric(5,2),                         -- 0..100
+  parse_status   text not null default 'pending',      -- pending|ok|failed
+  shortlisted    boolean,
+  created_at     timestamptz not null default now()
+);
+
+create table rounds (
+  id          uuid primary key default gen_random_uuid(),
+  drive_id    uuid not null references drives(id) on delete cascade,
+  position    int  not null,
+  type        round_type not null,
+  mode        round_mode not null default 'auto',
+  status      round_status not null default 'pending',
+  threshold   numeric(6,2),                            -- cut-off marks / score
+  unique (drive_id, position)
+);
+
+create table round_candidates (
+  round_id     uuid not null references rounds(id) on delete cascade,
+  candidate_id uuid not null references candidates(id) on delete cascade,
+  status       rc_status not null default 'invited',
+  score        numeric(6,2),
+  rank         int,
+  hr_note      text,
+  primary key (round_id, candidate_id)
+);
+
+create table tests (
+  id             uuid primary key default gen_random_uuid(),
+  round_id       uuid not null unique references rounds(id) on delete cascade,
+  difficulty     difficulty,
+  duration_sec   int  not null,
+  question_count int  not null,
+  settings       jsonb not null default '{}',          -- tags, per-level counts, languages
+  opens_at       timestamptz,
+  closes_at      timestamptz
+);
+
+create table questions (
+  id            uuid primary key default gen_random_uuid(),
+  kind          question_kind not null,
+  body          text not null,
+  options       jsonb,                                 -- mcq: ["A","B","C","D"]
+  answer        jsonb,                                 -- mcq: index; NEVER sent to students
+  tags          text[] not null default '{}',
+  difficulty    difficulty not null,
+  marks         numeric(5,2) not null default 1,
+  ai_generated  boolean not null default false,
+  approved      boolean not null default false,
+  created_by    uuid references users(id),
+  created_at    timestamptz not null default now()
+);
+
+create table test_questions (
+  test_id     uuid not null references tests(id) on delete cascade,
+  question_id uuid not null references questions(id),
+  position    int not null,
+  primary key (test_id, question_id)
+);
+
+create table test_cases (
+  id          uuid primary key default gen_random_uuid(),
+  question_id uuid not null references questions(id) on delete cascade,
+  input       text not null,
+  expected    text not null,
+  is_sample   boolean not null,                        -- 3 sample + 15 hidden
+  position    int not null
+);
+
+create table attempts (
+  id             uuid primary key default gen_random_uuid(),
+  test_id        uuid not null references tests(id) on delete cascade,
+  candidate_id   uuid not null references candidates(id) on delete cascade,
+  status         attempt_status not null default 'not_started',
+  started_at     timestamptz,
+  deadline_at    timestamptz,                          -- server-owned (D5)
+  submitted_at   timestamptz,
+  remaining_sec_on_lock int,                           -- used when HR resumes
+  tab_switches   int not null default 0,
+  marks          numeric(6,2),
+  time_taken_sec int,
+  resume_count   int not null default 0,
+  unique (test_id, candidate_id)
+);
+
+create table answers (
+  id            uuid primary key default gen_random_uuid(),
+  attempt_id    uuid not null references attempts(id) on delete cascade,
+  question_id   uuid not null references questions(id),
+  response      jsonb,                                 -- mcq choice
+  code          text,
+  language      text,
+  passed_cases  int,
+  total_cases   int,
+  marks         numeric(5,2),
+  updated_at    timestamptz not null default now(),
+  unique (attempt_id, question_id)
+);
+
+create table interviews (
+  id            uuid primary key default gen_random_uuid(),
+  round_id      uuid not null references rounds(id) on delete cascade,
+  candidate_id  uuid not null references candidates(id) on delete cascade,
+  status        text not null default 'scheduled',     -- scheduled|live|completed|failed
+  transcript    jsonb,                                 -- [{role, text, ts}]
+  ai_scores     jsonb,                                 -- rubric (01-requirements open decisions)
+  hr_notes      text,
+  started_at    timestamptz,
+  ended_at      timestamptz,
+  unique (round_id, candidate_id)
+);
+
+create table violations (
+  id          uuid primary key default gen_random_uuid(),
+  attempt_id  uuid not null references attempts(id) on delete cascade,
+  kind        text not null,                           -- tab_switch|fullscreen_exit
+  occurred_at timestamptz not null default now(),
+  hr_action   text,                                    -- resumed|dismissed
+  hr_by       uuid references users(id),
+  hr_at       timestamptz
+);
+
+create table verification_logs (
+  id           uuid primary key default gen_random_uuid(),
+  candidate_id uuid not null references candidates(id) on delete cascade,
+  round_id     uuid not null references rounds(id) on delete cascade,
+  step         text not null,                          -- id_dob|location|terms|fullscreen
+  ok           boolean not null,
+  meta         jsonb not null default '{}',            -- lat/lng, user agent, ip
+  created_at   timestamptz not null default now()
+);
+
+create table email_logs (
+  id           uuid primary key default gen_random_uuid(),
+  candidate_id uuid references candidates(id) on delete set null,
+  round_id     uuid references rounds(id) on delete set null,
+  to_email     text not null,
+  template     text not null,
+  status       text not null,                          -- queued|sent|failed
+  error        text,
+  created_at   timestamptz not null default now()
+);
+
+create table ai_prompts (
+  key         text primary key,                        -- question_gen_mcq, interview_system, interview_eval…
+  body        text not null,
+  version     int not null default 1,
+  updated_by  uuid references users(id),
+  updated_at  timestamptz not null default now()
+);
+
+create table audit_logs (
+  id          bigint generated always as identity primary key,
+  actor_id    uuid references users(id),
+  action      text not null,                           -- e.g. round.skip, answer_key.update
+  entity      text not null,
+  entity_id   text,
+  diff        jsonb,
+  created_at  timestamptz not null default now()
+);
+
+create index on candidates (drive_id);
+create index on rounds (drive_id);
+create index on round_candidates (candidate_id);
+create index on attempts (test_id, status);
+create index on violations (attempt_id);
+create index on questions using gin (tags);
+
+-- D8: RLS on, no policies → anon/authenticated keys read nothing. API uses the service connection.
+do $$ declare t text; begin
+  for t in select tablename from pg_tables where schemaname = 'public' loop
+    execute format('alter table %I enable row level security', t);
+  end loop;
+end $$;
+```
+
+## Invariants the code must keep
+- `attempts.deadline_at` is set once at start; only HR resume changes it (`now() + remaining_sec_on_lock`).
+- `tab_switches >= 3` ⇒ `status = 'locked'` (set in the same statement that increments).
+- Ranking: `order by marks desc, time_taken_sec asc`.
+- `questions.answer` and `test_cases where is_sample = false` are only selected by HR/scoring code.
