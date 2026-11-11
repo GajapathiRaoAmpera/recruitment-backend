@@ -1,13 +1,17 @@
+
 name: Security
+
 on:
   pull_request:
     branches: [main]
   push:
     branches: [main]
   schedule:
-    - cron: "0 3 * * 1"   # weekly, catches new CVEs in unchanged deps
+    - cron: "0 3 * * 1"
+
 permissions:
   contents: read
+
 jobs:
   secrets:
     runs-on: ubuntu-latest
@@ -15,30 +19,42 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      # scans only the PR's new commits so old history does not block every PR
+
       - name: Gitleaks
         run: |
           RANGE=${{ github.event.pull_request.base.sha && format('{0}..{1}', github.event.pull_request.base.sha, github.sha) || 'HEAD~1..HEAD' }}
           docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.21.2 \
             detect --source /repo --log-opts="$RANGE" --redact -v
+
   deps:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
+
       - name: pip-audit
         run: |
-          [ -f uv.lock ] || { echo "::warning::No uv.lock yet, skipping"; exit 0; }
+          if [ ! -f uv.lock ]; then
+            echo "::warning::No uv.lock yet, skipping"
+            exit 0
+          fi
+
           uv export --frozen --no-dev --no-hashes -o req.txt
           uvx pip-audit -r req.txt
+
   codeql:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write
+
     steps:
-      - uses: actions/checkout@v7
-      - uses: github/codeql-action/init@v3
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v4
         with:
           languages: python
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4

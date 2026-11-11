@@ -27,3 +27,11 @@ jobs:
         run: uv run ruff check . && uv run ruff format --check .
       - if: steps.guard.outputs.ok == 'true'
         run: uv run pytest -q
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # shortcut: same scaffold guard as the build job
+      - run: |
+          [ -f pyproject.toml ] || { echo "::warning::No pyproject.toml yet, skipping"; exit 0; }
+          docker build -t recruitment-backend .
