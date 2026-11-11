@@ -14,6 +14,7 @@ tests/                 pytest (mirrors app/)
 Danger zones have their own CLAUDE.md: `app/auth/`, `app/execution/`, `app/integrity/`, `migrations/`.
 
 ## Commands
+`make` lists shortcuts for these (`make check` before pushing).
 ```bash
 uv sync                                  # install
 uv run fastapi dev app/main.py           # run on :8000, docs at /docs
