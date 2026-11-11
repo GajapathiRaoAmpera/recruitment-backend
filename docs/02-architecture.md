@@ -2,7 +2,7 @@
 
 ## Shape
 ```
-React SPA (Vite, JS, Tailwind)            ── Student / HR / Super Admin portals, one app, role-routed
+Next.js app (React, TypeScript, SCSS)     ── Student / HR / Super Admin portals, one app, role-routed
         │  HTTPS JSON (Bearer JWT)
         ▼
 Python API (FastAPI)                      ── all business logic, RBAC, scoring, emails
@@ -36,15 +36,15 @@ Each feature folder = `router.py` (HTTP) → `service.py` (logic) → `repo.py` 
 ## Frontend layout (`recruitment-frontend/`)
 ```
 src/
-  app/          router, providers (QueryClient, auth), role guards
-  api/          one fetch client + per-feature query hooks (TanStack Query)
-  components/   shared UI built from Stitch tokens (Button, Table, Modal…)
-  features/
-    auth/ hr-dashboard/ drives/ candidates/ question-bank/ test-runner/ coding/ interview/ results/ admin/
-  styles/       tailwind.config tokens copied from Stitch DESIGN.md
+  app/          Next.js App Router: (auth)/{student,hr,admin}/login, (staff)/hr, (staff)/admin, (student)/student, exam/[roundId]
+  components/   shared UI built from Stitch tokens (ui/, shell/, hire/, student/, brand/, auth/)
+  features/     test-runner/ (danger zone: full screen, tab-switch reporting, local drafts)
+  lib/          supabase client, api fetch client, helpers
+  mock/         in-memory prototype data; replaced screen by screen as endpoints land
+  styles/       SCSS tokens + mixins copied from Stitch DESIGN.md
 stitch_.../     design mockups — reference only, not shipped
 ```
-`features/test-runner/` is the danger zone (full screen, tab-switch reporting, local drafts).
+The browser calls `/api/v1/*` on its own origin; Next rewrites it to FastAPI (no CORS needed).
 
 ## Key decisions (ADR-lite)
 | # | Decision | Why |
@@ -59,7 +59,7 @@ stitch_.../     design mockups — reference only, not shipped
 | D8 | RLS enabled on every table with no anon/authenticated policies; API uses service connection | Defence in depth if the anon key leaks |
 | D9 | Judge0 self-hosted (Judge0 CE). SQL runs via its SQLite language | Free tier of hosted Judge0 too small for a batch |
 | D10 | All AI output (questions, scores) validated against a Pydantic schema before storage; questions need HR approval | Model output is untrusted |
-| D11 | Frontend: React 18 + Vite + JavaScript, React Router, TanStack Query, Tailwind with Stitch tokens, Monaco editor | Spec says React+JS; Stitch designs are Tailwind |
+| D11 | Frontend: Next.js (App Router) + React 19 + TypeScript, SCSS modules with Stitch tokens, Monaco editor. HR/Admin sign in with supabase-js in the browser (publishable key only) | Built this way already; TypeScript compiles to JavaScript, so the spec's "React + JS" constraint holds — confirm with the mentor |
 
 ## Cross-cutting rules
 - Errors: `{"error": {"code": "STRING_CODE", "message": "human text", "details": {}}}`.

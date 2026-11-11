@@ -1,5 +1,7 @@
 from fastapi import APIRouter, FastAPI
 
+from app.admin.router import router as admin_router
+from app.auth.router import router as auth_router
 from app.core.errors import install_error_handlers
 
 app = FastAPI(title="Ampera Campus Hire API", version="0.1.0")
@@ -13,4 +15,6 @@ async def healthz() -> dict:
     return {"status": "ok"}
 
 
+api.include_router(auth_router)
+api.include_router(admin_router)
 app.include_router(api)

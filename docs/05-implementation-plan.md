@@ -9,7 +9,7 @@ Suggested split once decided: **A** Auth+Admin, **B** Intake+Parser, **C** Round
 |---|---|---|---|---|
 | 0.1 | `uv init`, FastAPI skeleton, `/healthz`, settings from env, error handler, pytest + ruff | backend | — | |
 | 0.2 | Alembic + migration `0001_init` from `03-database-schema.md` | backend | — | |
-| 0.3 | Vite React JS app, Tailwind with Stitch tokens, router with role guards, API client | frontend | — | |
+| 0.3 | Next.js + TypeScript app, SCSS with Stitch tokens, role-guarded layouts, API client | frontend | — | |
 | 0.4 | `.env.example` both repos, README setup, CI (lint + test) on push | both | — | |
 
 ## Phase 1 — Auth & roles
