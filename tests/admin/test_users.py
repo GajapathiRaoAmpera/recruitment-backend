@@ -271,3 +271,11 @@ def test_supabase_delete_error_502(supabase):
     with pytest.raises(AppError) as e:
         asyncio.run(supabase_admin.delete_user(uuid.uuid4()))
     assert e.value.code == "AUTH_PROVIDER_ERROR"
+
+
+def test_invite_error_keeps_supabase_reason(supabase):
+    supabase(500, {"error_code": "unexpected_failure", "msg": "Error sending invite email"})
+    with pytest.raises(AppError) as e:
+        asyncio.run(supabase_admin.invite_user("a@x.com", "A"))
+    assert e.value.message == "Supabase couldn't create the account: Error sending invite email"
+    assert e.value.details == {"provider_status": 500}

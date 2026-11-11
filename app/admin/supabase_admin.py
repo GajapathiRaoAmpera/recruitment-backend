@@ -1,11 +1,26 @@
 """Supabase Auth admin calls. Uses the secret key, so this module only ever runs server-side."""
 
+import logging
 from uuid import UUID
 
 import httpx
 
 from app.core.config import get_settings
 from app.core.errors import AppError
+
+log = logging.getLogger(__name__)
+
+
+def _provider_error(r: httpx.Response, what: str) -> AppError:
+    """Keep Supabase's own reason (e.g. "Error sending invite email"): admins need it."""
+    try:
+        body = r.json()
+        reason = body.get("msg") or body.get("message") or body.get("error_description") or ""
+    except ValueError:
+        reason = ""
+    log.warning("Supabase %s failed: HTTP %s %s", what, r.status_code, reason)
+    message = f"Supabase couldn't {what}" + (f": {reason}" if reason else "")
+    return AppError(502, "AUTH_PROVIDER_ERROR", message, {"provider_status": r.status_code})
 
 
 async def _call(method: str, path: str, **kwargs) -> httpx.Response:
@@ -38,7 +53,7 @@ async def invite_user(email: str, full_name: str) -> UUID:
             429, "EMAIL_RATE_LIMIT", "Supabase's invite email limit was hit. Try again later."
         )
     if r.is_error:
-        raise AppError(502, "AUTH_PROVIDER_ERROR", "Supabase couldn't create the account")
+        raise _provider_error(r, "create the account")
     return UUID(r.json()["id"])
 
 
@@ -48,4 +63,4 @@ async def delete_user(user_id: UUID) -> None:
     if r.status_code == 404:
         return  # already gone in Supabase; our row is what matters
     if r.is_error:
-        raise AppError(502, "AUTH_PROVIDER_ERROR", "Supabase couldn't delete the account")
+        raise _provider_error(r, "delete the account")
