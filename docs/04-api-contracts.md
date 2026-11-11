@@ -70,9 +70,11 @@ All S endpoints return 409 `ATTEMPT_LOCKED` / `ATTEMPT_EXPIRED` when not `in_pro
 | GET  | `/rounds/{id}/interviews` | HR | list with scores |
 
 ## Super Admin
-| Method | Path | Auth |
-|---|---|---|
-| GET/POST/PATCH | `/admin/users` | SA |
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| GET | `/admin/users` | SA | → `{items:[{id, email, full_name, role, is_active, created_at}], next_cursor:null}` |
+| POST | `/admin/users` | SA | `{email, full_name, role:"hr"\|"super_admin"=hr}` → 201 user · creates the Supabase Auth user and emails an invite to `FRONTEND_URL/set-password` · 409 `USER_EXISTS` · 429 `EMAIL_RATE_LIMIT` · 502 `AUTH_PROVIDER_ERROR` |
+| PATCH | `/admin/users/{id}` | SA | `{full_name?, role?, is_active?}` → user · 404 `USER_NOT_FOUND` · 409 `CANNOT_CHANGE_SELF` (own role/active) |
 | GET/PUT | `/admin/ai-prompts/{key}` | SA |
 | GET/PUT | `/admin/settings` | SA |
 | GET | `/admin/audit-logs` | SA |

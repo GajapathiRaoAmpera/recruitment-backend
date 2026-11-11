@@ -1,5 +1,6 @@
 from fastapi import APIRouter, FastAPI
 
+from app.admin.router import router as admin_router
 from app.auth.router import router as auth_router
 from app.core.errors import install_error_handlers
 
@@ -15,4 +16,5 @@ async def healthz() -> dict:
 
 
 api.include_router(auth_router)
+api.include_router(admin_router)
 app.include_router(api)
