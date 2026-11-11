@@ -46,3 +46,7 @@ async def update_user(session: AsyncSession, user_id: UUID, changes: dict) -> Ro
         {**changes, "id": user_id},
     )
     return rows.mappings().one()
+
+
+async def delete_user(session: AsyncSession, user_id: UUID) -> None:
+    await session.execute(text("delete from users where id = :id"), {"id": user_id})

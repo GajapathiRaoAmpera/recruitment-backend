@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import IntegrityError
 
 from app.admin import repo, service, supabase_admin
 from app.auth import security
@@ -21,16 +22,19 @@ NOW = datetime.now(UTC)
 
 
 class FakeSession:
-    commits = 0
+    commits = rollbacks = 0
 
     async def commit(self):
         self.commits += 1
+
+    async def rollback(self):
+        self.rollbacks += 1
 
 
 @pytest.fixture
 def db(monkeypatch):
     users = {u.id: {**u.model_dump(), "is_active": True, "created_at": NOW} for u in (ADMIN, HR)}
-    audits, invites = [], []
+    audits, invites, sb_deleted, in_use = [], [], [], set()
     session = FakeSession()
 
     async def list_users(_):
@@ -52,6 +56,14 @@ def db(monkeypatch):
         users[uid] = {**users[uid], **changes}
         return users[uid]
 
+    async def delete_user(_, uid):
+        if uid in in_use:
+            raise IntegrityError("delete", {}, Exception("fk violation"))
+        users.pop(uid)
+
+    async def sb_delete(uid):
+        sb_deleted.append(uid)
+
     async def invite(email, full_name):
         invites.append((email, full_name))
         return uuid.uuid4()
@@ -65,12 +77,21 @@ def db(monkeypatch):
         email_taken=email_taken,
         insert_user=insert_user,
         update_user=update_user,
+        delete_user=delete_user,
     ).items():
         monkeypatch.setattr(repo, name, fn)
     monkeypatch.setattr(supabase_admin, "invite_user", invite)
+    monkeypatch.setattr(supabase_admin, "delete_user", sb_delete)
     monkeypatch.setattr(service, "audit", audit)
     app.dependency_overrides[get_session] = lambda: session
-    yield dict(users=users, audits=audits, invites=invites, session=session)
+    yield dict(
+        users=users,
+        audits=audits,
+        invites=invites,
+        session=session,
+        sb_deleted=sb_deleted,
+        in_use=in_use,
+    )
     app.dependency_overrides.clear()
 
 
@@ -85,6 +106,7 @@ def as_user(user):
         ("get", "/api/v1/admin/users"),
         ("post", "/api/v1/admin/users"),
         ("patch", f"/api/v1/admin/users/{uuid.uuid4()}"),
+        ("delete", f"/api/v1/admin/users/{uuid.uuid4()}"),
     ],
 )
 def test_hr_forbidden(db, method, path):
@@ -154,7 +176,40 @@ def test_patch_unknown_404(db):
     assert r.status_code == 404
 
 
-# --- the Supabase invite call itself ---
+def test_delete_unused_user_removes_row_and_supabase_account(db):
+    r = as_user(ADMIN).delete(f"/api/v1/admin/users/{HR.id}")
+    assert r.status_code == 204
+    assert HR.id not in db["users"] and db["sb_deleted"] == [HR.id]
+    assert db["audits"][0][1:3] == ("user.delete", HR.id) and db["session"].commits == 1
+
+
+def test_delete_user_in_use_409_and_untouched(db):
+    db["in_use"].add(HR.id)
+    r = as_user(ADMIN).delete(f"/api/v1/admin/users/{HR.id}")
+    assert r.status_code == 409 and r.json()["error"]["code"] == "USER_IN_USE"
+    assert "Deactivate" in r.json()["error"]["message"]
+    assert HR.id in db["users"] and db["sb_deleted"] == [] and db["session"].commits == 0
+
+
+def test_cannot_delete_yourself(db):
+    r = as_user(ADMIN).delete(f"/api/v1/admin/users/{ADMIN.id}")
+    assert r.status_code == 409 and r.json()["error"]["code"] == "CANNOT_CHANGE_SELF"
+
+
+def test_delete_unknown_404(db):
+    assert as_user(ADMIN).delete(f"/api/v1/admin/users/{uuid.uuid4()}").status_code == 404
+
+
+def test_supabase_failure_commits_nothing(db, monkeypatch):
+    async def boom(_):
+        raise AppError(502, "AUTH_PROVIDER_ERROR", "down")
+
+    monkeypatch.setattr(supabase_admin, "delete_user", boom)
+    r = as_user(ADMIN).delete(f"/api/v1/admin/users/{HR.id}")
+    assert r.status_code == 502 and db["session"].commits == 0
+
+
+# --- the Supabase admin calls themselves ---
 
 
 @pytest.fixture
@@ -200,3 +255,19 @@ def test_invite_errors(supabase, status, body, code):
     with pytest.raises(AppError) as e:
         asyncio.run(supabase_admin.invite_user("a@x.com", "A"))
     assert e.value.code == code
+
+
+@pytest.mark.parametrize("status", [204, 200, 404])
+def test_supabase_delete_ok_or_already_gone(supabase, status):
+    uid = uuid.uuid4()
+    seen = supabase(status, {})
+    asyncio.run(supabase_admin.delete_user(uid))
+    assert seen["request"].method == "DELETE"
+    assert seen["request"].url.path == f"/auth/v1/admin/users/{uid}"
+
+
+def test_supabase_delete_error_502(supabase):
+    supabase(500, {})
+    with pytest.raises(AppError) as e:
+        asyncio.run(supabase_admin.delete_user(uuid.uuid4()))
+    assert e.value.code == "AUTH_PROVIDER_ERROR"

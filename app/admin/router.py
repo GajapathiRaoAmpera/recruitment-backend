@@ -38,3 +38,12 @@ async def update_user(
     session: AsyncSession = Depends(get_session),
 ):
     return await service.update_user(session, actor, user_id, body)
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: UUID,
+    actor: StaffUser = Depends(super_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    await service.delete_user(session, actor, user_id)

@@ -75,6 +75,7 @@ All S endpoints return 409 `ATTEMPT_LOCKED` / `ATTEMPT_EXPIRED` when not `in_pro
 | GET | `/admin/users` | SA | → `{items:[{id, email, full_name, role, is_active, created_at}], next_cursor:null}` |
 | POST | `/admin/users` | SA | `{email, full_name, role:"hr"\|"super_admin"=hr}` → 201 user · creates the Supabase Auth user and emails an invite to `FRONTEND_URL/set-password` · 409 `USER_EXISTS` · 429 `EMAIL_RATE_LIMIT` · 502 `AUTH_PROVIDER_ERROR` |
 | PATCH | `/admin/users/{id}` | SA | `{full_name?, role?, is_active?}` → user · 404 `USER_NOT_FOUND` · 409 `CANNOT_CHANGE_SELF` (own role/active) |
+| DELETE | `/admin/users/{id}` | SA | → 204 · removes the `users` row and the Supabase Auth account · 409 `USER_IN_USE` when drives/audit history/questions reference the user (deactivate instead) · 409 `CANNOT_CHANGE_SELF` · 404 · 502 `AUTH_PROVIDER_ERROR` (nothing changed) |
 | GET/PUT | `/admin/ai-prompts/{key}` | SA |
 | GET/PUT | `/admin/settings` | SA |
 | GET | `/admin/audit-logs` | SA |
