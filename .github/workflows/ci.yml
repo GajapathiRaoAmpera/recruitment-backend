@@ -1,0 +1,29 @@
+name: CI
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      # shortcut: no pyproject.toml yet, so the job passes empty; remove this guard once the app is scaffolded
+      - id: guard
+        run: test -f pyproject.toml && echo "ok=true" >> "$GITHUB_OUTPUT" || echo "::warning::No pyproject.toml yet, skipping checks"
+      - if: steps.guard.outputs.ok == 'true'
+        run: uv sync --locked
+      - if: steps.guard.outputs.ok == 'true'
+        run: uv run ruff check . && uv run ruff format --check .
+      - if: steps.guard.outputs.ok == 'true'
+        run: uv run pytest -q
