@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin import repo, service
-from app.admin.schemas import UserCreate, UserOut, UserPage, UserPatch
+from app.admin.schemas import UserCreate, UserCreated, UserOut, UserPage, UserPatch
 from app.auth.schemas import StaffUser
 from app.auth.security import require_role
 from app.core.db import get_session
@@ -21,7 +21,7 @@ async def list_users(
     return {"items": await repo.list_users(session), "next_cursor": None}
 
 
-@router.post("/users", response_model=UserOut, status_code=201)
+@router.post("/users", response_model=UserCreated, status_code=201)
 async def create_user(
     body: UserCreate,
     actor: StaffUser = Depends(super_admin),
@@ -38,3 +38,12 @@ async def update_user(
     session: AsyncSession = Depends(get_session),
 ):
     return await service.update_user(session, actor, user_id, body)
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: UUID,
+    actor: StaffUser = Depends(super_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    await service.delete_user(session, actor, user_id)

@@ -13,6 +13,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     full_name: Name
     role: Role = "hr"
+    send_email: bool = True  # False: return a one-time invite link instead of emailing it
 
 
 class UserPatch(BaseModel):
@@ -28,6 +29,11 @@ class UserOut(BaseModel):
     role: Role
     is_active: bool
     created_at: datetime
+
+
+class UserCreated(UserOut):
+    # One-time sign-in link: a credential. Only in this response; never logged or audited.
+    invite_link: str | None = None
 
 
 class UserPage(BaseModel):
