@@ -4,22 +4,22 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin import repo, supabase_admin
-from app.admin.schemas import UserCreate, UserOut, UserPatch
+from app.admin.schemas import UserCreate, UserCreated, UserOut, UserPatch
 from app.auth.schemas import StaffUser
 from app.core.audit import audit
 from app.core.errors import AppError
 
 
-async def create_user(session: AsyncSession, actor: StaffUser, body: UserCreate) -> UserOut:
+async def create_user(session: AsyncSession, actor: StaffUser, body: UserCreate) -> UserCreated:
     if await repo.email_taken(session, body.email):
         raise AppError(409, "USER_EXISTS", "An account with this email already exists")
     # shortcut: if the DB insert fails after the invite, the Supabase user is orphaned;
     # re-inviting then returns USER_EXISTS. Add a cleanup call if this ever happens in practice.
-    user_id = await supabase_admin.invite_user(body.email, body.full_name)
+    user_id, link = await supabase_admin.invite_user(body.email, body.full_name, body.send_email)
     row = await repo.insert_user(session, user_id, body.email, body.full_name, body.role)
     await audit(session, actor.id, "user.create", "users", user_id, body.model_dump())
     await session.commit()
-    return UserOut.model_validate(dict(row))
+    return UserCreated.model_validate({**dict(row), "invite_link": link})
 
 
 async def update_user(
@@ -48,6 +48,13 @@ async def delete_user(session: AsyncSession, actor: StaffUser, user_id: UUID) ->
     current = await repo.get_user(session, user_id)
     if current is None:
         raise AppError(404, "USER_NOT_FOUND", "User not found")
+    # Super Admins are deactivate-only: one click must never remove the people who manage access.
+    if current["role"] == "super_admin":
+        raise AppError(
+            409,
+            "SUPER_ADMIN_PROTECTED",
+            "Super Admin accounts can't be deleted. Deactivate them instead.",
+        )
     try:
         await repo.delete_user(session, user_id)
     except IntegrityError as e:  # drives, audit history or questions reference this user

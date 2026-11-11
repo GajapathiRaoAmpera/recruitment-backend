@@ -37,15 +37,26 @@ async def _call(method: str, path: str, **kwargs) -> httpx.Response:
         raise AppError(502, "AUTH_PROVIDER_ERROR", "Couldn't reach Supabase. Try again.") from e
 
 
-async def invite_user(email: str, full_name: str) -> UUID:
-    """Create the Supabase Auth user and email them a link to set their password."""
+async def invite_user(
+    email: str, full_name: str, send_email: bool = True
+) -> tuple[UUID, str | None]:
+    """Create the Supabase Auth user with a one-time link to /set-password.
+
+    send_email=True: Supabase emails the link. False: no email; the link is returned so the
+    Super Admin can share it (works without any SMTP setup). Returns (user id, link or None).
+    """
     redirect = f"{get_settings().frontend_url.rstrip('/')}/set-password"
-    r = await _call(
-        "POST",
-        "/invite",
-        params={"redirect_to": redirect},
-        json={"email": email, "data": {"full_name": full_name}},
-    )
+    data = {"full_name": full_name}
+    if send_email:
+        r = await _call(
+            "POST", "/invite", params={"redirect_to": redirect}, json={"email": email, "data": data}
+        )
+    else:
+        r = await _call(
+            "POST",
+            "/admin/generate_link",
+            json={"type": "invite", "email": email, "data": data, "redirect_to": redirect},
+        )
     if r.status_code == 422 and "email_exists" in r.text:
         raise AppError(409, "USER_EXISTS", "An account with this email already exists")
     if r.status_code == 429:
@@ -54,7 +65,8 @@ async def invite_user(email: str, full_name: str) -> UUID:
         )
     if r.is_error:
         raise _provider_error(r, "create the account")
-    return UUID(r.json()["id"])
+    body = r.json()  # generate_link returns the user's fields plus action_link at the top level
+    return UUID(body["id"]), (None if send_email else body["action_link"])
 
 
 async def delete_user(user_id: UUID) -> None:
