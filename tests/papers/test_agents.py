@@ -227,7 +227,7 @@ def test_missing_key_raises_not_configured(settings_env):
             cls()
         assert (e.value.status, e.value.code) == (503, "AI_PROVIDER_NOT_CONFIGURED")
 
-    settings_env(GEMINI_API_KEY=SECRET)
+    settings_env(GEMINI_API_KEY=SECRET, GROQ_API_KEY="")  # explicit: else a real .env key leaks in
     assert providers_status() == {"gemini": True, "groq": False}
 
 
@@ -240,7 +240,14 @@ def _sleeps():
     return waits, sleep
 
 
-def test_429_retries_then_provider_error():
+def _google_429(*details):
+    return httpx.Response(429, json={"error": {"code": 429, "details": list(details)}})
+
+
+RETRY_INFO = {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "37s"}
+
+
+def test_429_retries_patiently_then_rate_limited_error():
     hits = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -251,9 +258,79 @@ def test_429_retries_then_provider_error():
     client = GroqClient(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
     with pytest.raises(AppError) as e:
         run(client.complete_json(system="s", user="u"))
-    assert (e.value.status, e.value.code) == (502, "AI_PROVIDER_ERROR")
-    assert e.value.details["provider_status"] == 429
-    assert len(hits) == 3 and len(waits) == 2 and waits[0] < waits[1]
+    assert (e.value.status, e.value.code) == (429, "AI_PROVIDER_RATE_LIMITED")
+    assert e.value.details == {"provider": "groq", "provider_status": 429}
+    assert "Wait a minute" in e.value.message
+    # rate limits get more attempts and longer waits than 5xx (1 minute provider windows)
+    assert len(hits) == 6 and len(waits) == 5
+    assert waits == sorted(waits) and waits[0] >= 5 and max(waits) <= 60
+
+
+def test_429_waits_for_gemini_retry_delay_in_body():
+    replies = [_google_429(RETRY_INFO)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if replies:
+            return replies.pop()
+        parts = [{"text": '{"questions": []}'}]
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": parts}}]})
+
+    waits, sleep = _sleeps()
+    gem = GeminiClient(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
+    assert run(gem.complete_json(system="s", user="u")) == {"questions": []}
+    assert waits == [37.0]
+
+
+def test_retry_after_header_wins_and_is_capped():
+    replies = [
+        httpx.Response(429, headers={"retry-after": "500"}),
+        httpx.Response(429, headers={"retry-after": "2"}),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if replies:
+            return replies.pop(0)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    waits, sleep = _sleeps()
+    groq = GroqClient(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
+    assert run(groq.complete_json(system="s", user="u")) == {}
+    assert waits == [60.0, 2.0]
+
+
+def test_429_daily_quota_fails_fast_with_clear_message():
+    hits = []
+    quota = {
+        "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+        "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hits.append(request)
+        return _google_429(quota, RETRY_INFO)
+
+    waits, sleep = _sleeps()
+    gem = GeminiClient(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
+    with pytest.raises(AppError) as e:
+        run(gem.complete_json(system="s", user="u"))
+    assert (e.value.status, e.value.code) == (429, "AI_PROVIDER_QUOTA_EXHAUSTED")
+    assert "daily" in e.value.message and e.value.details["provider"] == "gemini"
+    assert len(hits) == 1 and waits == []
+
+
+def test_5xx_keeps_three_short_attempts():
+    hits = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hits.append(request)
+        return httpx.Response(503)
+
+    waits, sleep = _sleeps()
+    groq = GroqClient(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
+    with pytest.raises(AppError) as e:
+        run(groq.complete_json(system="s", user="u"))
+    assert e.value.code == "AI_PROVIDER_ERROR" and e.value.details["provider_status"] == 503
+    assert len(hits) == 3 and waits == [1.0, 2.0]
 
 
 def test_retry_then_success_and_request_formats():

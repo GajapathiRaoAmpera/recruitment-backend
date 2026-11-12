@@ -57,6 +57,7 @@ class PoolQuestion(BaseModel):
     fixed_options: bool = False
     edited: bool = False
     verified: bool = True
+    selected: bool = True  # HR's pick: only selected questions reach students
 
 
 class PaperItem(BaseModel):
@@ -75,6 +76,12 @@ class KeyItem(PaperItem):
     why: str
     fixed_options: bool = False
     edited: bool = False
+
+
+class PoolItem(KeyItem):
+    """A pool question as HR reviews it (original option order), with HR's selection."""
+
+    selected: bool = True
 
 
 class QuestionEdit(BaseModel):
@@ -115,6 +122,7 @@ class Check(BaseModel):
 # --------------------------------------------------------------------------------------------
 
 MAX_CANDIDATES_PER_SEND = 5000
+MAX_POOL_SELECTION = 5000  # far above the largest pool (3 x 300 questions + reserve)
 
 
 class DraftCreate(BaseModel):
@@ -173,6 +181,12 @@ class DraftDetail(DraftOut):
     overlap: OverlapOut | None = None
     issues: list[IssueOut] = Field(default_factory=list)
     edited_count: int = 0
+    pool: list[PoolItem] = Field(default_factory=list)  # every generated question, for selection
+    selected_count: int = 0
+
+
+class SelectionUpdate(BaseModel):
+    selected_ids: list[str] = Field(max_length=MAX_POOL_SELECTION)
 
 
 class SendRequest(BaseModel):

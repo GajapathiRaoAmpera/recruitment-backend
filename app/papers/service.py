@@ -22,6 +22,7 @@ from app.papers.schemas import (
     IssueOut,
     OverlapOut,
     PaperSettings,
+    PoolItem,
     PoolQuestion,
     QuestionEdit,
     SendResult,
@@ -79,14 +80,24 @@ def _pool(d: Mapping) -> list[PoolQuestion]:
     return [PoolQuestion.model_validate(q) for q in d.get("pool") or []]
 
 
+def _selected(pool: list[PoolQuestion]) -> list[PoolQuestion]:
+    return [q for q in pool if q.selected]
+
+
+def _checks(settings: PaperSettings, drive_ref: str, pool: list[PoolQuestion]):
+    """Checks run on what can reach students: HR's selection, not the whole pool."""
+    return builder.run_checks(settings, drive_ref, _selected(pool))
+
+
 def _detail(d: dict, issues: list[Mapping]) -> DraftDetail:
     settings = PaperSettings.model_validate(d["settings"])
     pool = _pool(d)
+    chosen = _selected(pool)
     sample, overlap = [], None
-    if pool and d["status"] != "generating":
-        sample = builder.build_paper(settings, d["drive_ref"], SAMPLE_REF, pool).items
-        a = builder.build_paper(settings, d["drive_ref"], "sample-a", pool).items
-        b = builder.build_paper(settings, d["drive_ref"], "sample-b", pool).items
+    if chosen and d["status"] != "generating":
+        sample = builder.build_paper(settings, d["drive_ref"], SAMPLE_REF, chosen).items
+        a = builder.build_paper(settings, d["drive_ref"], "sample-a", chosen).items
+        b = builder.build_paper(settings, d["drive_ref"], "sample-b", chosen).items
         ov = builder.overlap(a, b)
         overlap = OverlapOut(shared=ov.shared, same_position=ov.same_position, total=ov.total)
     base = {k: v for k, v in d.items() if k != "pool"}
@@ -94,11 +105,16 @@ def _detail(d: dict, issues: list[Mapping]) -> DraftDetail:
         {
             **base,
             "pool_size": len(pool),
-            "checks": d.get("checks") or [],
+            # recomputed (pure, cheap) so stored checks from older rules never disagree with accept
+            "checks": [c.model_dump() for c in _checks(settings, d["drive_ref"], pool)]
+            if chosen and d["status"] != "generating"
+            else d.get("checks") or [],
             "sample": [i.model_dump() for i in sample],
             "overlap": overlap,
             "issues": [IssueOut.model_validate(dict(i)) for i in issues],
             "edited_count": sum(1 for q in pool if q.edited),
+            "pool": [PoolItem.model_validate(q.model_dump()) for q in pool],
+            "selected_count": len(chosen),
         }
     )
 
@@ -166,7 +182,7 @@ async def run_generation(draft_id: UUID, actor_id: UUID) -> None:
 
                 overrides = await repo.get_prompt_overrides(session)
                 pool = await build_pool(settings, on_progress=on_progress, overrides=overrides)
-                checks = builder.run_checks(settings, d["drive_ref"], pool)
+                checks = _checks(settings, d["drive_ref"], pool)
                 finished = await repo.finish_generation(
                     session,
                     draft_id,
@@ -283,7 +299,7 @@ async def edit_question(
     after = before.model_copy(update={**body.model_dump(), "edited": True})
     pool[index] = after
     settings = PaperSettings.model_validate(d["settings"])
-    checks = builder.run_checks(settings, d["drive_ref"], pool)
+    checks = _checks(settings, d["drive_ref"], pool)
     pool_json = [q.model_dump() for q in pool]
     checks_json = [c.model_dump() for c in checks]
     if not await repo.save_pool_and_checks(session, draft_id, pool_json, checks_json):
@@ -308,6 +324,47 @@ async def edit_question(
     return _detail(d, await repo.list_issues(session, draft_id))
 
 
+async def set_selection(
+    session: AsyncSession, actor: StaffUser, draft_id: UUID, selected_ids: list[str]
+) -> DraftDetail:
+    """HR picks which pool questions may reach students; checks re-run on the selection."""
+    d = await _load(session, actor, draft_id, lock=True)
+    if d["status"] != "draft":
+        raise AppError(
+            409, "NOT_EDITABLE", "Questions can only be selected while the paper is a draft."
+        )
+    pool = _pool(d)
+    wanted = set(selected_ids)
+    unknown = wanted - {q.id for q in pool}
+    if unknown:
+        raise AppError(
+            422,
+            "UNKNOWN_QUESTIONS",
+            "Some selected questions are not in this paper.",
+            {"unknown": sorted(unknown)[:20]},
+        )
+    pool = [q.model_copy(update={"selected": q.id in wanted}) for q in pool]
+    settings = PaperSettings.model_validate(d["settings"])
+    checks = _checks(settings, d["drive_ref"], pool)
+    pool_json = [q.model_dump() for q in pool]
+    checks_json = [c.model_dump() for c in checks]
+    if not await repo.save_pool_and_checks(session, draft_id, pool_json, checks_json):
+        raise AppError(
+            409, "NOT_EDITABLE", "Questions can only be selected while the paper is a draft."
+        )
+    await audit(
+        session,
+        actor.id,
+        "paper_draft.selection",
+        ENTITY,
+        draft_id,
+        {"selected": len(wanted), "of": len(pool)},
+    )
+    await session.commit()
+    d = {**d, "pool": pool_json, "checks": checks_json}
+    return _detail(d, await repo.list_issues(session, draft_id))
+
+
 async def accept_draft(session: AsyncSession, actor: StaffUser, draft_id: UUID) -> DraftOut:
     d = await _load(session, actor, draft_id, lock=True)
     if d["status"] == "accepted":
@@ -315,7 +372,7 @@ async def accept_draft(session: AsyncSession, actor: StaffUser, draft_id: UUID) 
     if d["status"] != "draft":
         raise AppError(409, "NOT_READY", "Only a generated draft can be accepted.")
     settings = PaperSettings.model_validate(d["settings"])
-    checks = builder.run_checks(settings, d["drive_ref"], _pool(d))
+    checks = _checks(settings, d["drive_ref"], _pool(d))
     failed = [c.id for c in checks if not c.ok]
     if failed:
         raise AppError(
@@ -344,7 +401,8 @@ async def send_papers(
     settings = PaperSettings.model_validate(d["settings"])
     persisted = 0
     if d.get("persisted_at") is None:
-        persisted = await repo.persist_questions(session, draft_id, d.get("pool") or [])
+        chosen = [q for q in d.get("pool") or [] if q.get("selected", True)]
+        persisted = await repo.persist_questions(session, draft_id, chosen)
     rows = [{"candidate_ref": r, "seed": _seed(settings, d["drive_ref"], r)} for r in refs]
     sent = await repo.insert_issues(session, draft_id, rows)
     result = SendResult(sent=sent, already_sent=len(refs) - sent)

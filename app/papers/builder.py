@@ -147,8 +147,15 @@ def _bad_question_reason(q: PoolQuestion) -> str | None:
 
 
 def run_checks(
-    settings: PaperSettings, drive_ref: str, pool: Sequence[PoolQuestion]
+    settings: PaperSettings,
+    drive_ref: str,
+    pool: Sequence[PoolQuestion],
 ) -> list[Check]:
+    """Checks over the questions that may reach students.
+
+    No "students get different papers" check (user decision): a small pool or an exact HR
+    selection simply gives candidates overlapping papers; `overlap` in the detail still shows it.
+    """
     checks: list[Check] = []
 
     try:
@@ -205,20 +212,4 @@ def run_checks(
         )
     )
 
-    if not settings.different_per_student:
-        differ, detail = True, "Same paper for everyone by design"
-    else:
-        a = build_paper(settings, drive_ref, "sample-a", pool).items
-        b = build_paper(settings, drive_ref, "sample-b", pool).items
-        ov = overlap(a, b)
-        differ = ov.shared < ov.total
-        detail = f"{ov.shared}/{ov.total} questions shared between two sample students"
-        if not differ:
-            detail += (
-                "; the pool is too small for every student to get different questions "
-                "(raise pool_factor)"
-            )
-    checks.append(
-        Check(id="students_differ", label="Students get different papers", ok=differ, detail=detail)
-    )
     return checks

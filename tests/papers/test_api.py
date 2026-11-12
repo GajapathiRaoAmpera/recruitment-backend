@@ -347,7 +347,8 @@ def test_detail_has_one_sample_paper(db):
     assert body["overlap"]["total"] == 10 and body["overlap"]["shared"] < 10
     assert body["pool_size"] == 20 and body["edited_count"] == 0 and body["issues"] == []
     assert all(c["ok"] for c in body["checks"])
-    assert "pool" not in body
+    assert len(body["pool"]) == 20 and all(q["selected"] for q in body["pool"])
+    assert body["selected_count"] == 20
 
 
 # --- edit ---
@@ -628,3 +629,83 @@ def test_generation_not_audited_when_finish_is_a_no_op(db, monkeypatch):
     monkeypatch.setattr(repo, "finish_generation", no_op)
     asyncio.run(service.run_generation(did, HR.id))
     assert db["audits"] == []
+
+
+# --- HR selection (which pool questions may reach students) ---
+
+
+def select(c, did, ids):
+    return c.put(f"{BASE}/drafts/{did}/selection", json={"selected_ids": ids})
+
+
+def test_selection_of_exactly_the_paper_gives_everyone_those_questions(db):
+    did = seed_draft(db)
+    c = as_user(HR)
+    picked = [q["id"] for q in c.get(f"{BASE}/drafts/{did}").json()["sample"]]
+    r = select(c, did, picked + picked[:1])  # duplicates ignored
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["selected_count"] == 10 and body["pool_size"] == 20
+    assert {q["id"] for q in body["pool"] if q["selected"]} == set(picked)
+    assert {q["id"] for q in body["sample"]} == set(picked)
+    assert body["overlap"]["shared"] == 10  # same questions for everyone, by HR's choice
+    checks = {ch["id"]: ch for ch in body["checks"]}
+    assert all(ch["ok"] for ch in checks.values()), checks
+    assert "students_differ" not in checks
+    stored = {q["id"]: q["selected"] for q in db["drafts"][did]["pool"]}
+    assert sum(stored.values()) == 10
+    assert actions(db) == ["paper_draft.selection"]
+    assert db["audits"][0][3] == {"selected": 10, "of": 20}
+    assert db["session"].commits == 1
+    assert c.post(f"{BASE}/drafts/{did}/accept").status_code == 200
+
+
+def test_selection_smaller_than_paper_fails_check_and_blocks_accept(db):
+    did = seed_draft(db)
+    c = as_user(HR)
+    ids = [q["id"] for q in db["drafts"][did]["pool"]][:5]
+    body = select(c, did, ids).json()
+    cover = next(ch for ch in body["checks"] if ch["id"] == "pool_covers")
+    assert cover["ok"] is False and "Short of" in cover["detail"]
+    r = c.post(f"{BASE}/drafts/{did}/accept")
+    assert r.status_code == 409 and r.json()["error"]["code"] == "CHECKS_FAILED"
+
+
+def test_selection_rejects_unknown_ids_and_locked_drafts(db):
+    did = seed_draft(db)
+    c = as_user(HR)
+    r = select(c, did, ["nope"])
+    assert r.status_code == 422 and r.json()["error"]["code"] == "UNKNOWN_QUESTIONS"
+    assert db["audits"] == [] and all(q.get("selected", True) for q in db["drafts"][did]["pool"])
+    locked = seed_draft(db, status="accepted")
+    r = select(c, locked, [db["drafts"][locked]["pool"][0]["id"]])
+    assert r.status_code == 409 and r.json()["error"]["code"] == "NOT_EDITABLE"
+    assert db["reads"][-1] == (locked, True)  # read under row lock
+    assert (
+        as_user(HR2).put(f"{BASE}/drafts/{did}/selection", json={"selected_ids": []}).status_code
+        == 404
+    )
+
+
+def test_send_persists_only_selected_questions(db):
+    did = seed_draft(db)
+    c = as_user(HR)
+    picked = [q["id"] for q in c.get(f"{BASE}/drafts/{did}").json()["sample"]]
+    select(c, did, picked)
+    assert c.post(f"{BASE}/drafts/{did}/accept").status_code == 200
+    c.post(f"{BASE}/drafts/{did}/send", json={"candidate_refs": ["d1-c0"]})
+    assert set(db["questions"]) == set(picked)
+
+
+def test_detail_recomputes_checks_so_old_stored_rules_do_not_block(db):
+    did = seed_draft(db)
+    stale = {
+        "id": "students_differ",
+        "label": "Students get different papers",
+        "ok": False,
+        "detail": "x",
+    }
+    db["drafts"][did]["checks"].append(stale)
+    checks = as_user(HR).get(f"{BASE}/drafts/{did}").json()["checks"]
+    assert [c["id"] for c in checks if not c["ok"]] == []
+    assert "students_differ" not in {c["id"] for c in checks}

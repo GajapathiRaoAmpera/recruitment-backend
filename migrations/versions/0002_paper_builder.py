@@ -13,6 +13,7 @@ branch_labels = None
 depends_on = None
 
 # asyncpg runs ONE statement per op.execute.
+# No colon+digit in this SQL: op.execute wraps it in text(), which reads that as a bind param.
 UPGRADE = [
     # the worked solution / "why" of a question (was nowhere in the schema)
     "alter table questions add column explanation text",
@@ -27,7 +28,7 @@ UPGRADE = [
       pool          jsonb not null default '[]',
       checks        jsonb not null default '[]',
       status        text not null check (status in ('generating', 'draft', 'accepted', 'failed')),
-      progress      jsonb not null default '{"done":0,"total":0}',
+      progress      jsonb not null default jsonb_build_object('done', 0, 'total', 0),
       error         text,
       created_at    timestamptz not null default now(),
       accepted_at   timestamptz,

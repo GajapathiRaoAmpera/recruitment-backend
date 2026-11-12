@@ -94,14 +94,15 @@ Enums: `track` = `it`\|`non_it`; level = `easy`\|`medium`\|`advanced`; section =
 | GET | `/papers/drafts` | HR | → `DraftOut[]` (HR: own, SA: all) |
 | GET | `/papers/drafts/{id}` | HR | → `DraftDetail` · 404 `NOT_FOUND` |
 | PATCH | `/papers/drafts/{id}/questions/{question_id}` | HR | `{text, options[4], answer (0-3), why}` → `DraftDetail` (checks re-run) · 409 `NOT_EDITABLE` (status is not `draft`) · 404 `NOT_FOUND` · 404 `QUESTION_NOT_FOUND` · 422 `VALIDATION_ERROR` (blank text/why, not exactly 4 options, blank or duplicate options (case-insensitive), answer outside 0-3) |
+| PUT | `/papers/drafts/{id}/selection` | HR | `{selected_ids: [question id]}` (max 5000; duplicates ignored) → `DraftDetail`. HR picks which pool questions may reach students; every unlisted question is deselected. Papers, checks and send then use only selected questions · 409 `NOT_EDITABLE` · 404 `NOT_FOUND` · 422 `UNKNOWN_QUESTIONS` (`details.unknown`) |
 | POST | `/papers/drafts/{id}/accept` | HR | → `DraftOut` (`status:"accepted"`, `accepted_at` set, pool frozen) · 409 `ALREADY_ACCEPTED` · 409 `NOT_READY` (still `generating` or `failed`) · 409 `CHECKS_FAILED` (`details.failed` = failed check ids) · 404 |
 | POST | `/papers/drafts/{id}/send` | HR | `{candidate_refs: string[]}` (max 5000, each ≤ 200 chars) → `{sent, already_sent}` · 422 `NO_CANDIDATES` (empty after trimming and de-duplicating) · 409 `NOT_ACCEPTED` · 404 |
 
 `DraftOut`: `{id, drive_ref, owner_id, title, track, status, settings, progress:{done,total}, error|null, pool_size, created_at, accepted_at|null, persisted_at|null}`. It never carries the question pool.
 
-`DraftDetail` = `DraftOut` + `checks:[{id,label,ok,detail}]`, `sample:[KeyItem]` (the one review paper, built for candidate `"sample"`; empty while `generating`), `overlap:{shared,same_position,total}|null` (two sample students compared; null while generating or with no pool), `issues:[{candidate_ref, issued_at}]`, `edited_count`. `KeyItem` = `{id, level, section, topic, text, options[], answer (index), why, fixed_options, edited}`. Answers appear only in these HR/SA responses, never in student-facing schemas.
+`DraftDetail` = `DraftOut` + `checks:[{id,label,ok,detail}]`, `sample:[KeyItem]` (the one review paper, built for candidate `"sample"`; empty while `generating`), `overlap:{shared,same_position,total}|null` (two sample students compared; null while generating or with no pool), `issues:[{candidate_ref, issued_at}]`, `edited_count`, `pool:[PoolItem]` (every generated question, original option order), `selected_count`. `PoolItem` = `KeyItem` + `selected` (default true). `KeyItem` = `{id, level, section, topic, text, options[], answer (index), why, fixed_options, edited}`. Answers appear only in these HR/SA responses, never in student-facing schemas.
 
-Check ids: `settings_valid`, `pool_covers`, `no_repeats`, `answers_present`, `students_differ`.
+Check ids: `settings_valid`, `pool_covers`, `no_repeats`, `answers_present`. (No "students get different papers" check: overlap between candidates is shown in `overlap`, never blocks accept.)
 
 Behaviour notes
 - **Progress polling.** `POST /drafts` returns immediately. Poll `GET /drafts/{id}` (about every 2-3 s) and read `progress.done / progress.total` while `status` is `generating`. Stop on `draft` (ready to review), `failed` (show `error`; start a new draft) or `accepted`. A draft still `generating` 15 minutes after creation is reported as `failed` with `error:"Generation timed out"` (background jobs are lost on restart).
@@ -120,11 +121,12 @@ Errors (all `{"error":{code,message,details}}`)
 | 409 | `NOT_READY` | accept while `generating` or `failed` |
 | 409 | `CHECKS_FAILED` | accept with failed checks (`details.failed`) |
 | 409 | `NOT_ACCEPTED` | send before accept |
+| 422 | `UNKNOWN_QUESTIONS` | selection lists ids not in the pool (`details.unknown`) |
 | 422 | `NO_CANDIDATES` | send with no usable `candidate_refs` |
 | 422 | `VALIDATION_ERROR` | invalid body (settings, edit rules, missing `candidate_refs`) |
 | 503 | `AI_PROVIDER_NOT_CONFIGURED` | `POST /drafts` when a Gemini or Groq key is missing |
 
-Generation failures are not HTTP errors: the background job sets `status:"failed"` and stores a user-safe message in `error`. Those messages come from `AI_PROVIDER_NOT_CONFIGURED` (a key removed mid-run), `AI_PROVIDER_ERROR` (502 equivalent: provider outage or rate limit after retries) or `POOL_TOO_SMALL` (422 equivalent: too few generated questions passed Groq verification), or a generic "Generation failed. Try again." for anything else.
+Generation failures are not HTTP errors: the background job sets `status:"failed"` and stores a user-safe message in `error`. Those messages come from `AI_PROVIDER_NOT_CONFIGURED` (a key removed mid-run), `AI_PROVIDER_ERROR` (502 equivalent: provider outage after 3 short retries), `AI_PROVIDER_RATE_LIMITED` (429 equivalent: still rate-limited after 6 tries that wait as long as the provider asks — `Retry-After` or Gemini's body `retryDelay`, max 60 s each), `AI_PROVIDER_QUOTA_EXHAUSTED` (429 equivalent: per-day quota used up; fails at once) or `POOL_TOO_SMALL` (422 equivalent: too few generated questions passed Groq verification), or a generic "Generation failed. Try again." for anything else.
 
 ## Frontend screen → endpoint map
 | Stitch screen | Endpoints |
@@ -134,7 +136,7 @@ Generation failures are not HTTP errors: the background job sets `status:"failed
 | create_campus_drive_wizard | `POST /drives`, `/drives/{id}/rounds`, `PUT /rounds/{id}/test` |
 | drive_registration | `/candidates/import`, `/resumes`, `/candidates`, `/shortlist` |
 | question_bank_ai_generator | `/questions*` |
-| round1_paper_builder (`/hr/papers`: Setup → Generate → Review → Send) | `/papers/ai-status`, `POST /papers/drafts`, `/papers/drafts`, `/papers/drafts/{id}`, `PATCH /papers/drafts/{id}/questions/{qid}`, `/papers/drafts/{id}/accept`, `/papers/drafts/{id}/send` |
+| round1_paper_builder (`/hr/papers`: Setup → Generate → Review → Send) | `/papers/ai-status`, `POST /papers/drafts`, `/papers/drafts`, `/papers/drafts/{id}`, `PATCH /papers/drafts/{id}/questions/{qid}`, `PUT /papers/drafts/{id}/selection`, `/papers/drafts/{id}/accept`, `/papers/drafts/{id}/send` |
 | system_check_proctor_diagnostic | `/entry/*` |
 | student_aptitude_test, student_coding_test | `/attempt*` |
 | candidate_submission_result, offer_results_student_portal, candidate_dashboard | `/me/status` |

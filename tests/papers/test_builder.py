@@ -199,7 +199,6 @@ def test_all_checks_pass_on_good_pool():
         "pool_covers",
         "no_repeats",
         "answers_present",
-        "students_differ",
     ]
     assert all(c.ok for c in checks), [c for c in checks if not c.ok]
 
@@ -230,25 +229,11 @@ def _easy_only(**kw):
     return make_settings(counts={"easy": 3, "medium": 0, "advanced": 0}, **kw)
 
 
-def test_students_differ_fails_when_pool_equals_paper_even_with_shuffling():
+def test_no_students_differ_check_even_when_pool_equals_paper():
     pool = [q for q in make_pool(per_cell=1) if q.level == "easy"]
     checks = {c.id: c for c in run_checks(_easy_only(), "d1", pool)}
-    assert checks["students_differ"].ok is False
-    assert "3/3" in checks["students_differ"].detail
-    assert "pool_factor" in checks["students_differ"].detail
-
-
-def test_students_differ_passes_with_pool_twice_paper_size():
-    pool = [q for q in make_pool(per_cell=2) if q.level == "easy"]
-    checks = {c.id: c for c in run_checks(_easy_only(), "d1", pool)}
-    assert checks["students_differ"].ok is True
-
-
-def test_students_differ_always_passes_in_fixed_mode():
-    pool = [q for q in make_pool(per_cell=1) if q.level == "easy"]
-    s = _easy_only(different_per_student=False)
-    checks = {c.id: c for c in run_checks(s, "d1", pool)}
-    assert checks["students_differ"].ok is True
+    assert "students_differ" not in checks
+    assert all(c.ok for c in checks.values())
 
 
 def test_draw_dedupes_by_id_even_with_different_text():

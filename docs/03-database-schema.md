@@ -238,7 +238,7 @@ create table paper_drafts (
   pool          jsonb not null default '[]',           -- [PoolQuestion] incl. answer + why
   checks        jsonb not null default '[]',           -- [Check]
   status        text not null check (status in ('generating', 'draft', 'accepted', 'failed')),
-  progress      jsonb not null default '{"done":0,"total":0}',
+  progress      jsonb not null default jsonb_build_object('done', 0, 'total', 0),
   error         text,                                  -- user-safe message when failed
   created_at    timestamptz not null default now(),
   accepted_at   timestamptz,

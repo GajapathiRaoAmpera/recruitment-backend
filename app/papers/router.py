@@ -13,6 +13,7 @@ from app.papers.schemas import (
     DraftDetail,
     DraftOut,
     QuestionEdit,
+    SelectionUpdate,
     SendRequest,
     SendResult,
 )
@@ -59,6 +60,16 @@ async def edit_question(
     session: AsyncSession = Depends(get_session),
 ):
     return await service.edit_question(session, actor, draft_id, question_id, body)
+
+
+@router.put("/drafts/{draft_id}/selection", response_model=DraftDetail)
+async def set_selection(
+    draft_id: UUID,
+    body: SelectionUpdate,
+    actor: StaffUser = Depends(hr),
+    session: AsyncSession = Depends(get_session),
+):
+    return await service.set_selection(session, actor, draft_id, body.selected_ids)
 
 
 @router.post("/drafts/{draft_id}/accept", response_model=DraftOut)

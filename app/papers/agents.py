@@ -311,13 +311,64 @@ def _provider_error(provider: str, status: int | None) -> AppError:
     )
 
 
+def _rate_limited(provider: str) -> AppError:
+    return AppError(
+        429,
+        "AI_PROVIDER_RATE_LIMITED",
+        f"{provider} is rate-limiting requests. Wait a minute and try again, or generate fewer "
+        "questions (lower the counts or the pool factor).",
+        {"provider": provider.lower(), "provider_status": 429},
+    )
+
+
+def _quota_exhausted(provider: str) -> AppError:
+    return AppError(
+        429,
+        "AI_PROVIDER_QUOTA_EXHAUSTED",
+        f"The {provider} daily quota for this API key is used up. Try again tomorrow, or use a "
+        "key with a higher quota.",
+        {"provider": provider.lower(), "provider_status": 429},
+    )
+
+
+def _google_rate_info(r: httpx.Response) -> tuple[float | None, bool]:
+    """(retryDelay seconds, per-day quota hit) from a Google-style 429 body.
+
+    Gemini sends no Retry-After header; it puts google.rpc.RetryInfo / QuotaFailure in the body.
+    """
+    try:
+        details = r.json()["error"]["details"]
+    except (ValueError, KeyError, TypeError):
+        return None, False
+    delay, daily = None, False
+    for d in details if isinstance(details, list) else []:
+        if not isinstance(d, dict):
+            continue
+        kind = str(d.get("@type", ""))
+        if kind.endswith("RetryInfo"):
+            try:
+                delay = float(str(d.get("retryDelay", "")).removesuffix("s"))
+            except ValueError:
+                pass
+        elif kind.endswith("QuotaFailure"):
+            violations = d.get("violations")
+            for v in violations if isinstance(violations, list) else []:
+                if isinstance(v, dict) and "PerDay" in str(v.get("quotaId", "")):
+                    daily = True
+    return delay, daily
+
+
 class _HttpJsonClient:
-    """Shared POST + retry. 429/5xx/network errors retry with exponential backoff."""
+    """Shared POST + retry. 5xx/network errors: 3 short tries. 429: up to 6 tries, waiting as
+    long as the provider asks (Retry-After header or Gemini's body retryDelay), capped at 60 s.
+    A per-day quota 429 fails at once: retrying cannot help until the quota resets."""
 
     provider = "LLM"
     max_attempts = 3
+    rate_limit_attempts = 6
     base_delay = 1.0
-    max_delay = 30.0
+    rate_limit_base_delay = 5.0  # provider windows are per minute; 1-2 s retries just burn tries
+    max_delay = 60.0
 
     def __init__(
         self,
@@ -340,45 +391,59 @@ class _HttpJsonClient:
         return f"{type(self).__name__}(model={self.model!r})"
 
     def _delay(self, attempt: int, r: httpx.Response | None) -> float:
+        limited = r is not None and r.status_code == 429
         if r is not None:
-            retry_after = r.headers.get("retry-after", "")
             try:
-                return min(max(float(retry_after), 0.0), self.max_delay)
+                return min(max(float(r.headers.get("retry-after", "")), 0.0), self.max_delay)
             except ValueError:
                 pass
-        return min(self.base_delay * 2 ** (attempt - 1), self.max_delay)
+            if limited:
+                hint, _ = _google_rate_info(r)
+                if hint is not None:
+                    return min(max(hint, 0.0), self.max_delay)
+        base = self.rate_limit_base_delay if limited else self.base_delay
+        return min(base * 2 ** (attempt - 1), self.max_delay)
 
     async def _post(self, url: str, headers: dict[str, str], body: dict) -> httpx.Response:
         last_status: int | None = None
+        rate_limited = False
+        attempt = 0
         async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
-            for attempt in range(1, self.max_attempts + 1):
+            while True:
+                attempt += 1
                 r: httpx.Response | None = None
                 try:
                     r = await client.post(url, headers=headers, json=body)
                 except httpx.HTTPError as e:
                     # type name only: some httpx messages include the request URL
-                    log.warning(
-                        "%s request failed (%s), attempt %d/%d",
-                        self.provider,
-                        type(e).__name__,
-                        attempt,
-                        self.max_attempts,
-                    )
+                    log.warning("%s request failed (%s)", self.provider, type(e).__name__)
                     last_status = None
                 else:
-                    if r.status_code == 429 or r.status_code >= 500:
+                    if r.status_code == 429:
+                        if _google_rate_info(r)[1]:
+                            log.warning("%s daily quota exhausted (HTTP 429)", self.provider)
+                            raise _quota_exhausted(self.provider)
+                        rate_limited, last_status = True, 429
+                    elif r.status_code >= 500:
                         last_status = r.status_code
-                        log.warning(
-                            "%s returned HTTP %d, attempt %d/%d",
-                            self.provider,
-                            r.status_code,
-                            attempt,
-                            self.max_attempts,
-                        )
                     else:
                         return r
-                if attempt < self.max_attempts:
-                    await self._sleep(self._delay(attempt, r))
+                limit = self.rate_limit_attempts if rate_limited else self.max_attempts
+                if attempt >= limit:
+                    break
+                wait = self._delay(attempt, r)
+                log.warning(
+                    "%s returned %s, attempt %d/%d, retrying in %.0f s",
+                    self.provider,
+                    f"HTTP {last_status}" if last_status else "no response",
+                    attempt,
+                    limit,
+                    wait,
+                )
+                await self._sleep(wait)
+        log.warning("%s gave up after %d attempts", self.provider, attempt)
+        if last_status == 429:
+            raise _rate_limited(self.provider)
         raise _provider_error(self.provider, last_status)
 
     def _fail(self, r: httpx.Response) -> AppError:
