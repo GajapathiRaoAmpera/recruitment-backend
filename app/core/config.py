@@ -1,3 +1,4 @@
+import hmac
 from functools import lru_cache
 
 from pydantic import field_validator
@@ -11,6 +12,10 @@ class Settings(BaseSettings):
     database_url: str  # postgresql+asyncpg://user:pass@host:5432/db
     supabase_url: str  # https://<project-ref>.supabase.co (not secret)
     supabase_secret_key: str  # sb_secret_... — server only, never sent to the browser
+    student_token_secret: str = ""  # optional override; default is derived from supabase_secret_key
+    resume_dir: str = (
+        "storage/resumes"  # resume PDFs are saved here (relative to where you start the app)
+    )
     frontend_url: str = "http://localhost:3000"  # invite emails link back here
 
     @field_validator("database_url")
@@ -20,6 +25,15 @@ class Settings(BaseSettings):
         return v.replace("postgresql://", "postgresql+asyncpg://", 1).replace(
             "postgres://", "postgresql+asyncpg://", 1
         )
+
+    @property
+    def entry_signing_key(self) -> str:
+        # derived (HMAC, domain-separated) so students need no extra setting
+        if self.student_token_secret:
+            return self.student_token_secret
+        return hmac.new(
+            self.supabase_secret_key.encode(), b"student-entry-token", "sha256"
+        ).hexdigest()
 
 
 @lru_cache
