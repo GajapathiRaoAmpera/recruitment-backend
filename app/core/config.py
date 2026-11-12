@@ -12,8 +12,6 @@ class Settings(BaseSettings):
     supabase_url: str  # https://<project-ref>.supabase.co (not secret)
     supabase_secret_key: str  # sb_secret_... — server only, never sent to the browser
     frontend_url: str = "http://localhost:3000"  # invite emails link back here
-    judge0_url: str = "http://localhost:2358"  # self-hosted Judge0 (infra/judge0)
-    judge0_auth_token: str = ""  # sent as X-Auth-Token; same value the Judge0 stack is started with
 
     @field_validator("database_url")
     @classmethod
@@ -22,6 +20,12 @@ class Settings(BaseSettings):
         return v.replace("postgresql://", "postgresql+asyncpg://", 1).replace(
             "postgres://", "postgresql+asyncpg://", 1
         )
+
+    @field_validator("gemini_api_key", "groq_api_key")
+    @classmethod
+    def _blank_is_missing(cls, v: str | None) -> str | None:
+        # `GEMINI_API_KEY=` in .env means "not configured", not an empty key
+        return v.strip() or None if v is not None else None
 
 
 @lru_cache
