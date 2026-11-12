@@ -12,11 +12,6 @@ class Settings(BaseSettings):
     supabase_url: str  # https://<project-ref>.supabase.co (not secret)
     supabase_secret_key: str  # sb_secret_... — server only, never sent to the browser
     frontend_url: str = "http://localhost:3000"  # invite emails link back here
-    # Round 1 paper builder LLMs. Keys are server only; missing => AI_PROVIDER_NOT_CONFIGURED
-    gemini_api_key: str | None = None
-    groq_api_key: str | None = None
-    gemini_model: str = "gemini-3.6-flash"  # generator (ai.google.dev/gemini-api/docs/models)
-    groq_model: str = "openai/gpt-oss-120b"  # blind verifier (console.groq.com/docs/models)
 
     @field_validator("database_url")
     @classmethod
