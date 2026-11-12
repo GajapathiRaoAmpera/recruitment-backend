@@ -87,32 +87,71 @@ Frontend (`recruitment-frontend/src/`):
 
 **Produces:**
 ```python
-Track = Literal["it", "non_it"]; Level = Literal["easy", "medium", "advanced"]
+Track = Literal["it", "non_it"]
+Level = Literal["easy", "medium", "advanced"]
 Section = Literal["aptitude", "reasoning", "technical"]
 DraftStatus = Literal["generating", "draft", "accepted", "failed"]
-LEVELS: tuple[Level, ...]; SECTIONS: tuple[Section, ...]
+LEVELS: tuple[Level, ...]
+SECTIONS: tuple[Section, ...]
+
 
 class PaperSettings(BaseModel):
     track: Track
-    counts: dict[Level, int]          # all three keys required, each 0..100, sum >= 1
-    mix: dict[Section, int]           # all three keys, each 0..100, sum == 100
-    it_syntax_percent: int = 50       # 0..100; IT technical only; guides the prompt (rest are concept questions)
-    pool_factor: int = 2              # 1..3; pool size = factor x paper size
-    duration_min: int = 60            # 5..240
+    counts: dict[Level, int]  # all three keys required, each 0..100, sum >= 1
+    mix: dict[Section, int]  # all three keys, each 0..100, sum == 100
+    it_syntax_percent: int = (
+        50  # 0..100; IT technical only; guides the prompt (rest are concept questions)
+    )
+    pool_factor: int = 2  # 1..3; pool size = factor x paper size
+    duration_min: int = 60  # 5..240
     different_per_student: bool = True
     shuffle_questions: bool = True
     shuffle_options: bool = True
 
-class PoolQuestion(BaseModel):        # stored in paper_drafts.pool
-    id: str                           # uuid4 string, becomes questions.id on send
-    level: Level; section: Section; topic: str; style: str   # style: concept | syntax | soft_skill | aptitude | reasoning
-    text: str; options: list[str]; answer: int; why: str
-    fixed_options: bool = False       # conventional-order options are never shuffled
-    edited: bool = False; verified: bool = True
-class PaperItem(BaseModel): id: str; level: Level; section: Section; topic: str; text: str; options: list[str]   # student-safe
-class KeyItem(PaperItem):   answer: int; why: str; fixed_options: bool = False; edited: bool = False
-class QuestionEdit(BaseModel): text: str; options: list[str]; answer: int; why: str    # 4 distinct non-blank options, 0<=answer<4, non-blank text and why
-class Check(BaseModel): id: str; label: str; ok: bool; detail: str
+
+class PoolQuestion(BaseModel):  # stored in paper_drafts.pool
+    id: str  # uuid4 string, becomes questions.id on send
+    level: Level
+    section: Section
+    topic: str
+    style: str  # style: concept | syntax | soft_skill | aptitude | reasoning
+    text: str
+    options: list[str]
+    answer: int
+    why: str
+    fixed_options: bool = False  # conventional-order options are never shuffled
+    edited: bool = False
+    verified: bool = True
+
+
+class PaperItem(BaseModel):
+    id: str
+    level: Level
+    section: Section
+    topic: str
+    text: str
+    options: list[str]  # student-safe
+
+
+class KeyItem(PaperItem):
+    answer: int
+    why: str
+    fixed_options: bool = False
+    edited: bool = False
+
+
+class QuestionEdit(BaseModel):
+    text: str
+    options: list[str]
+    answer: int
+    why: str  # 4 distinct non-blank options, 0<=answer<4, non-blank text and why
+
+
+class Check(BaseModel):
+    id: str
+    label: str
+    ok: bool
+    detail: str
 ```
 
 - [ ] **Step 1: Failing tests:** `test_mix_must_sum_to_100`, `test_counts_total_must_be_positive`, `test_negative_count_rejected`, `test_all_levels_and_sections_required`, `test_pool_factor_and_duration_bounds`, `test_question_edit_rejects_duplicate_options`, `test_question_edit_rejects_bad_answer_index`, `test_question_edit_rejects_blank_text`, `test_paper_item_has_no_answer_field`.

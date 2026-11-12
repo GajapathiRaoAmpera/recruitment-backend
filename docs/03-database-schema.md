@@ -107,7 +107,8 @@ create table questions (
   ai_generated  boolean not null default false,
   approved      boolean not null default false,
   created_by    uuid references users(id),
-  created_at    timestamptz not null default now()
+  created_at    timestamptz not null default now(),
+  explanation   text                                   -- 0002: worked solution / "why"; HR only
 );
 
 create table test_questions (
@@ -225,6 +226,38 @@ create index on attempts (test_id, status);
 create index on violations (attempt_id);
 create index on questions using gin (tags);
 
+-- 0002_paper_builder: Round 1 paper builder (docs/07-round1-paper-builder-implementation-plan.md)
+-- drive_ref / candidate_ref are opaque text, no FK (drives/candidates modules not built yet).
+create table paper_drafts (
+  id            uuid primary key default gen_random_uuid(),
+  drive_ref     text not null,
+  owner_id      uuid not null references users(id),
+  title         text not null,
+  track         text not null check (track in ('it', 'non_it')),
+  settings      jsonb not null,                        -- PaperSettings
+  pool          jsonb not null default '[]',           -- [PoolQuestion] incl. answer + why
+  checks        jsonb not null default '[]',           -- [Check]
+  status        text not null check (status in ('generating', 'draft', 'accepted', 'failed')),
+  progress      jsonb not null default '{"done":0,"total":0}',
+  error         text,                                  -- user-safe message when failed
+  created_at    timestamptz not null default now(),
+  accepted_at   timestamptz,
+  persisted_at  timestamptz                            -- pool written to questions (first send)
+);
+
+create table paper_issues (
+  draft_id      uuid not null references paper_drafts(id) on delete cascade,
+  candidate_ref text not null,
+  seed          text not null,                         -- drive_ref|track|candidate_ref (or fixed)
+  issued_at     timestamptz not null default now(),
+  primary key (draft_id, candidate_ref)
+);
+
+create index paper_drafts_owner_id_idx on paper_drafts (owner_id);
+create index paper_drafts_drive_ref_idx on paper_drafts (drive_ref);
+alter table paper_drafts enable row level security;
+alter table paper_issues enable row level security;
+
 -- D8: RLS on, no policies → anon/authenticated keys read nothing. API uses the service connection.
 do $$ declare t text; begin
   for t in select tablename from pg_tables where schemaname = 'public' loop
@@ -238,3 +271,8 @@ end $$;
 - `tab_switches >= 3` ⇒ `status = 'locked'` (set in the same statement that increments).
 - Ranking: `order by marks desc, time_taken_sec asc`.
 - `questions.answer` and `test_cases where is_sample = false` are only selected by HR/scoring code.
+- `questions.explanation` and `paper_drafts.pool` (answers + why) are only selected by HR/Super Admin code.
+- `paper_drafts.pool` changes only while `status = 'draft'`; `accepted` is reached only from `draft` and freezes it.
+- A pool question is written to `questions` once (same id, `on conflict (id) do nothing`), on the first send; `persisted_at` records it.
+- `paper_issues` rows are never rewritten: sending again to the same candidate is a no-op.
+- A draft in `generating` for more than 15 minutes is reported as `failed` ("Generation timed out") on read.
