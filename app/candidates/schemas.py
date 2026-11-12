@@ -37,6 +37,7 @@ class ShortlistIn(BaseModel):
 
 class ShortlistOut(BaseModel):
     updated: int  # candidates without a resume row are skipped
+    moved: int  # invited to Round 1 (shortlist) or taken out of it (un-shortlist)
 
 
 class ResumeInfo(BaseModel):

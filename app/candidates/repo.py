@@ -171,3 +171,33 @@ async def candidates_to_fetch(session: AsyncSession, drive_id: UUID, refetch: bo
         {"d": drive_id, "refetch": refetch},
     )
     return [dict(r) for r in result.mappings()]
+
+
+async def sync_round_one(
+    session: AsyncSession,
+    drive_id: UUID,
+    round_id: UUID,
+    candidate_ids: list[UUID],
+    shortlisted: bool,
+) -> int:
+    """Shortlisted candidates (that have a resume row) are invited to Round 1; un-shortlisted ones
+    are taken out again, but only while still `invited` (never after they started)."""
+    if shortlisted:
+        result = await session.execute(
+            text(
+                "insert into round_candidates (round_id, candidate_id) "
+                "select :r, c.id from candidates c join resumes s on s.candidate_id = c.id "
+                "where c.drive_id = :d and c.id = any(:ids) on conflict do nothing"
+            ),
+            {"r": round_id, "d": drive_id, "ids": candidate_ids},
+        )
+    else:
+        result = await session.execute(
+            text(
+                "delete from round_candidates where round_id = :r and candidate_id = any(:ids) "
+                "and status = 'invited' and candidate_id in "
+                "(select id from candidates where drive_id = :d)"
+            ),
+            {"r": round_id, "d": drive_id, "ids": candidate_ids},
+        )
+    return result.rowcount

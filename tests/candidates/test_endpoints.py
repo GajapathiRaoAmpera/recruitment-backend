@@ -13,7 +13,7 @@ from app.candidates import parser, repo, router, storage
 from app.core.db import get_session
 from app.main import app
 
-DRIVE, CAND = uuid.uuid4(), uuid.uuid4()
+DRIVE, CAND, ROUND_ONE = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 HR = StaffUser(id=uuid.uuid4(), email="h@x.com", full_name="H", role="hr")
 OTHER_HR_DRIVE_OWNER = uuid.uuid4()
 SAVED: list = []
@@ -94,12 +94,25 @@ def fakes(monkeypatch):
         QUERY["sl"] = (ids, v)
         return len(ids)
 
+    async def sync(_, d, rid, ids, v):
+        QUERY["sync"] = (rid, ids, v)
+        return len(ids)
+
+    async def ensure(*_):
+        return None
+
+    async def first_round(*_):
+        return ROUND_ONE
+
     monkeypatch.setattr(repo, "get_drive", get_drive)
     monkeypatch.setattr(repo, "drive_candidates", cands)
     monkeypatch.setattr(repo, "candidate_in_drive", in_drive)
     monkeypatch.setattr(repo, "upsert_resume", upsert)
     monkeypatch.setattr(repo, "list_candidates", list_candidates)
     monkeypatch.setattr(repo, "set_shortlisted", set_sl)
+    monkeypatch.setattr(repo, "sync_round_one", sync)
+    monkeypatch.setattr(router.rounds_mod, "ensure_rounds", ensure)
+    monkeypatch.setattr(router.rounds_mod, "first_test_round", first_round)
     monkeypatch.setattr(storage, "upload_pdf", upload)
     app.dependency_overrides[get_session] = lambda: FakeSession()
     app.dependency_overrides[current_user] = lambda: HR
@@ -116,7 +129,7 @@ PDF = make_pdf("Asha Rao asha@x.com Skills: Java, Python. CGPA: 8.4")
 
 
 def upload(files):
-    return client.post(f"/api/v1/drives/{DRIVE}/resumes", files=files)
+    return client.post(f"/api/v1/drives/{DRIVE}/resumes", files=[("file", f[1]) for f in files])
 
 
 def test_pdf_parsed_and_saved():
@@ -189,7 +202,8 @@ def test_shortlist():
     r = client.post(
         f"/api/v1/drives/{DRIVE}/shortlist", json={"candidate_ids": ids, "shortlisted": True}
     )
-    assert r.json() == {"updated": 1} and QUERY["sl"][1] is True
+    assert r.json() == {"updated": 1, "moved": 1} and QUERY["sl"][1] is True
+    assert QUERY["sync"] == (ROUND_ONE, [CAND], True)  # invited to Round 1
     assert (
         client.post(
             f"/api/v1/drives/{DRIVE}/shortlist", json={"candidate_ids": [], "shortlisted": True}

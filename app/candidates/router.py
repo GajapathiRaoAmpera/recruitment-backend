@@ -27,6 +27,7 @@ from app.candidates.schemas import (
 from app.core.audit import audit
 from app.core.db import get_session
 from app.core.errors import AppError
+from app.drives import rounds as rounds_mod
 
 router = APIRouter(tags=["candidates"])
 hr = require_role("hr")
@@ -86,17 +87,18 @@ async def _store(session: AsyncSession, drive, cid: UUID, data: bytes, parsed: d
 @router.post("/drives/{drive_id}/resumes", response_model=UploadResult)
 async def upload_resumes(
     drive_id: UUID,
-    files: list[UploadFile],
+    file: UploadFile,
     user: StaffUser = Depends(hr),
     session: AsyncSession = Depends(get_session),
 ):
-    """PDFs or a zip of PDFs. Each is matched to a candidate by its content (email, phone,
-    Student ID, name), not its file name. Unmatched ones are reported, not stored."""
+    """One PDF, or a zip of PDFs for a whole batch. (A single file field, because Swagger
+    cannot render a list of files.) Each PDF is matched to a candidate by its content (email,
+    phone, Student ID, name), not its file name. Unmatched ones are reported, not stored."""
     drive = await own_drive(session, drive_id, user)
     candidates = await repo.drive_candidates(session, drive_id)
     results: list[FileResult] = []
     # shortcut: parsed inline (OCR can take seconds per file); move to BackgroundTasks past ~30 s
-    async for name, data in _pdfs(files):
+    async for name, data in _pdfs([file]):
         if data is None:
             results.append(FileResult(file=name, status="too_large"))
             continue
@@ -168,16 +170,21 @@ async def shortlist(
 ):
     await own_drive(session, drive_id, user)
     n = await repo.set_shortlisted(session, drive_id, body.candidate_ids, body.shortlisted)
+    await rounds_mod.ensure_rounds(session, drive_id)
+    round_one = await rounds_mod.first_test_round(session, drive_id)
+    moved = await repo.sync_round_one(
+        session, drive_id, round_one, body.candidate_ids, body.shortlisted
+    )
     await audit(
         session,
         user.id,
         "candidate.shortlist",
         "drive",
         drive_id,
-        {"shortlisted": body.shortlisted, "count": n},
+        {"shortlisted": body.shortlisted, "count": n, "round_one": moved},
     )
     await session.commit()
-    return {"updated": n}
+    return {"updated": n, "moved": moved}
 
 
 @router.get("/candidates/{candidate_id}", response_model=CandidateProfile)
