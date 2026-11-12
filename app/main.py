@@ -5,6 +5,7 @@ from app.auth.router import router as auth_router
 from app.candidates.router import router as candidates_router
 from app.core.errors import install_error_handlers
 from app.drives.router import router as drives_router
+from app.execution.coding_questions.router import router as coding_questions_router
 from app.execution.router import router as execution_router
 from app.papers.router import router as papers_router
 from app.qbank.limits import QbankBodyLimit
@@ -30,6 +31,7 @@ api.include_router(drives_router)
 api.include_router(papers_router)
 api.include_router(qbank_router)
 api.include_router(execution_router)
+api.include_router(coding_questions_router)
 app.include_router(api)
 
 
