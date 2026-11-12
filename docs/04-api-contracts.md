@@ -10,7 +10,7 @@ Auth column: **S** = student attempt token, **HR** = HR or Super Admin (HR limit
 | GET  | `/me` | HR | → `{id, email, full_name, role}` |
 | POST | `/entry/verify` | — | `{student_id, dob}` → `{entry_token, candidate:{full_name}, rounds:[{round_id, type, test_id}]}` · 401 `ENTRY_MISMATCH` (logged) |
 | POST | `/entry/steps` | entry | `{round_id, step:"location"\|"terms"\|"fullscreen", ok, meta}` → 204 |
-| POST | `/entry/start` | entry | → `{attempt_token, attempt_id}` · 409 if location/terms missing |
+| POST | `/entry/start` | entry | `{round_id}` → `{attempt_token, attempt_id}` · creates the attempt on the first call (`status='in_progress'`, `started_at=now()`, `deadline_at=started_at+test duration`); a repeat call on a live attempt returns the same attempt and never moves the deadline · attempt token: `typ:"attempt"`, claims `cid` + `aid`, 2 h; an entry token is not accepted as an attempt token and the reverse · 403 `NOT_INVITED` (not in that round) · 409 `ROUND_NOT_OPEN` (invited, but the round can't be sat now) · 409 `STEPS_MISSING` (location/terms not logged ok; `details.missing`) · 409 `ATTEMPT_LOCKED` (attempt submitted or locked) · 409 `ATTEMPT_EXPIRED` (expired, or past `deadline_at`); no token is issued for these |
 
 ## Drives & pipeline
 | Method | Path | Auth | Notes |

@@ -10,7 +10,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 from uuid import UUID
 
-from app.core.errors import AppError
+from fastapi import Depends
+
+from app.auth.entry import current_attempt
 from app.execution.judge0 import Judge0Client
 
 
@@ -20,8 +22,9 @@ class AttemptContext:
     candidate_id: UUID
 
 
-async def student_attempt() -> AttemptContext:
-    raise AppError(401, "UNAUTHENTICATED", "Sign in required")
+async def student_attempt(who: tuple[UUID, UUID] = Depends(current_attempt)) -> AttemptContext:
+    attempt_id, candidate_id = who
+    return AttemptContext(attempt_id=attempt_id, candidate_id=candidate_id)
 
 
 @lru_cache
