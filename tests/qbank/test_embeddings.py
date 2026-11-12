@@ -1,26 +1,23 @@
-"""Gemini embedder + embed_source / embed_question. httpx.MockTransport and fakes only: no network,
-no DB."""
+"""Local embedder (fastembed, faked here: no model download) + embed_source / embed_question.
+Fakes only: no network, no DB."""
 
 import asyncio
-import json
 import logging
 import uuid
 
-import httpx
 import pytest
 
-from app.core.errors import AppError
 from app.qbank import embeddings
 from app.qbank.embeddings import (
     EmbeddingOutputError,
-    GeminiEmbedder,
+    LocalEmbedder,
     document_text,
     embed_question,
     embed_source,
     make_embedder,
 )
 
-SECRET = "AIza-super-secret-key-123"
+SECRET = "super-secret-123"
 DIM = 4
 
 
@@ -28,199 +25,107 @@ def run(coro):
     return asyncio.run(coro)
 
 
-async def no_sleep(_s: float) -> None:
-    return None
+class FakeModel:
+    """Stands in for fastembed.TextEmbedding: records calls, returns one vector per text."""
+
+    def __init__(self, vectors=None, fail_after: int | None = None):
+        self.vectors = vectors
+        self.fail_after = fail_after
+        self.calls: list[tuple[list[str], int]] = []
+
+    def embed(self, texts, batch_size=64):
+        self.calls.append((list(texts), batch_size))
+        for i, _ in enumerate(texts):
+            if self.fail_after is not None and i >= self.fail_after:
+                raise RuntimeError("onnx run failed")
+            yield list(self.vectors[i]) if self.vectors else [float(i + 1), 0.0, 0.0, 0.0]
 
 
-def vec(i: int) -> list[float]:
-    return [float(i + 1), 0.0, 0.0, 0.0]
+def local(model: FakeModel | None = None, dim: int = DIM) -> tuple[LocalEmbedder, FakeModel]:
+    """A LocalEmbedder whose shared model slot holds a fake (never loads fastembed)."""
+    fake = model or FakeModel()
+    e = LocalEmbedder("fake/model", dim=dim, cache_dir=f"/tmp/{uuid.uuid4()}")
+    LocalEmbedder._models[(e.model, e.cache_dir)] = fake
+    return e, fake
 
 
-def ok_handler(calls: list):
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        calls.append((request, body))
-        n = len(body["requests"])
-        start = sum(len(b["requests"]) for _, b in calls[:-1])
-        return httpx.Response(
-            200, json={"embeddings": [{"values": vec(start + i)} for i in range(n)]}
-        )
-
-    return handler
+# ------------------------------------------------------------------ LocalEmbedder
 
 
-def embedder(handler, model="gemini-embedding-2", dim=DIM) -> GeminiEmbedder:
-    return GeminiEmbedder(
-        SECRET, model, dim=dim, sleep=no_sleep, transport=httpx.MockTransport(handler)
-    )
+def test_embeds_in_a_thread_with_batching_and_normalises():
+    e, fake = local(FakeModel(vectors=[[3.0, 4.0, 0.0, 0.0], [0.0, 2.0, 0.0, 0.0]]))
+    out = run(e.embed(["a", "b"], task="document"))
+    assert out == [pytest.approx([0.6, 0.8, 0.0, 0.0]), pytest.approx([0.0, 1.0, 0.0, 0.0])]
+    assert fake.calls == [(["a", "b"], embeddings.BATCH_SIZE)]
 
 
-# ------------------------------------------------------------------ GeminiEmbedder
+def test_query_and_document_texts_are_embedded_as_is():
+    e, fake = local()
+    run(e.embed(["graphs"], task="query"))
+    assert fake.calls[0][0] == ["graphs"]  # MiniLM: no task prefixes
 
 
-def test_batches_of_100():
-    calls: list = []
-    e = embedder(ok_handler(calls))
-    out = run(e.embed([f"q{i}" for i in range(250)], task="document"))
-    assert [len(b["requests"]) for _, b in calls] == [100, 100, 50]
-    assert len(out) == 250
-    # order preserved across batches (vectors are L2-normalised: the first value is 1.0)
-    assert all(v == [1.0, 0.0, 0.0, 0.0] for v in out)
-    req, body = calls[0]
-    assert str(req.url).endswith("/v1beta/models/gemini-embedding-2:batchEmbedContents")
-    assert req.headers["x-goog-api-key"] == SECRET
-    assert SECRET not in str(req.url)
-    item = body["requests"][0]
-    assert item["model"] == "models/gemini-embedding-2"
-    assert item["embedContentConfig"]["outputDimensionality"] == DIM
-    # gemini-embedding-2 takes the task as a text prefix, not taskType
-    assert "taskType" not in item["embedContentConfig"]
-    assert item["content"]["parts"][0]["text"] == "title: none | text: q0"
-
-
-def test_query_task_prefix_for_embedding_2():
-    calls: list = []
-    run(embedder(ok_handler(calls)).embed(["graphs"], task="query"))
-    item = calls[0][1]["requests"][0]
-    assert item["content"]["parts"][0]["text"] == "task: search result | query: graphs"
-
-
-def test_task_type_field_for_embedding_001():
-    calls: list = []
-    e = embedder(ok_handler(calls), model="gemini-embedding-001")
-    run(e.embed(["doc"], task="document"))
-    run(e.embed(["q"], task="query"))
-    doc, query = calls[0][1]["requests"][0], calls[1][1]["requests"][0]
-    assert doc["embedContentConfig"] == {
-        "taskType": "RETRIEVAL_DOCUMENT",
-        "outputDimensionality": 4,
-    }
-    assert query["embedContentConfig"]["taskType"] == "RETRIEVAL_QUERY"
-    assert doc["content"]["parts"][0]["text"] == "doc"
-
-
-def test_empty_input_makes_no_request():
-    calls: list = []
-    assert run(embedder(ok_handler(calls)).embed([], task="document")) == []
-    assert calls == []
-
-
-def test_vectors_are_normalised():
-    def handler(request):
-        return httpx.Response(200, json={"embeddings": [{"values": [3.0, 4.0, 0.0, 0.0]}]})
-
-    (v,) = run(embedder(handler).embed(["x"], task="document"))
-    assert v == pytest.approx([0.6, 0.8, 0.0, 0.0])
+def test_empty_input_runs_nothing():
+    e, fake = local()
+    assert run(e.embed([], task="document")) == []
+    assert fake.calls == []
 
 
 @pytest.mark.parametrize(
-    "payload",
+    "vector",
     [
-        {"embeddings": [{"values": [1.0, 2.0, 3.0]}]},  # wrong length
-        {"embeddings": [{"values": [1.0, float("nan"), 0.0, 0.0]}]},
-        {"embeddings": [{"values": [1.0, float("inf"), 0.0, 0.0]}]},
-        {"embeddings": [{"values": [1.0, "0.5", 0.0, 0.0]}]},  # not a number
-        {"embeddings": [{"values": [0.0, 0.0, 0.0, 0.0]}]},  # zero vector: no direction
-        {"embeddings": [{"values": [1.0, True, 0.0, 0.0]}]},
-        {"embeddings": []},  # count mismatch
-        {"embeddings": [{"values": [1, 0, 0, 0]}, {"values": [1, 0, 0, 0]}]},
-        {"nothing": 1},
-        {"embeddings": [{"values": None}]},
+        [1.0, 2.0, 3.0],  # wrong length
+        [1.0, float("nan"), 0.0, 0.0],
+        [1.0, float("inf"), 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0],  # zero vector: no direction
     ],
 )
-def test_bad_vectors_rejected_safely(payload):
-    def handler(request):
-        # json.dumps writes NaN / Infinity literals, as a misbehaving server might
-        content = json.dumps(payload)
-        return httpx.Response(200, content=content, headers={"content-type": "application/json"})
-
-    with pytest.raises(EmbeddingOutputError) as exc:
-        run(embedder(handler).embed(["x"], task="document"))
-    assert SECRET not in str(exc.value)
-
-
-def test_non_json_reply_rejected():
-    def handler(request):
-        return httpx.Response(200, content=b"<html>oops</html>")
-
+def test_bad_vectors_rejected(vector):
+    e, _ = local(FakeModel(vectors=[vector]))
     with pytest.raises(EmbeddingOutputError):
-        run(embedder(handler).embed(["x"], task="document"))
+        run(e.embed(["x"], task="document"))
 
 
-def test_key_never_in_errors_or_logs(caplog):
-    caplog.set_level(logging.DEBUG)
+def test_model_is_loaded_once_and_shared(monkeypatch):
+    loads: list[tuple] = []
 
-    def server_error(request):
-        return httpx.Response(500, text=f"echo {SECRET}")
+    class FakeTextEmbedding(FakeModel):
+        def __init__(self, model_name, cache_dir):
+            super().__init__()
+            loads.append((model_name, cache_dir))
 
-    def network(request):
-        raise httpx.ConnectError(f"failed for {request.url} key={SECRET}")
+    import fastembed
 
-    def client_error(request):
-        return httpx.Response(400, text=f"bad key {SECRET}")
-
-    for handler in (server_error, network, client_error):
-        e = embedder(handler)
-        with pytest.raises(AppError) as exc:
-            run(e.embed(["x"], task="document"))
-        assert exc.value.code == "AI_PROVIDER_ERROR"
-        assert SECRET not in str(exc.value) and SECRET not in repr(exc.value.details)
-        assert SECRET not in repr(e)
-    assert SECRET not in caplog.text
+    monkeypatch.setattr(fastembed, "TextEmbedding", FakeTextEmbedding)
+    cache = f"/tmp/{uuid.uuid4()}"
+    a = LocalEmbedder("sentence-transformers/all-MiniLM-L6-v2", dim=DIM, cache_dir=cache)
+    b = LocalEmbedder("sentence-transformers/all-MiniLM-L6-v2", dim=DIM, cache_dir=cache)
+    run(a.embed(["x"], task="document"))
+    run(b.embed(["y"], task="query"))
+    assert loads == [("sentence-transformers/all-MiniLM-L6-v2", cache)]
 
 
-def test_rate_limit_retried_then_succeeds():
-    calls = {"n": 0}
-
-    def handler(request):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return httpx.Response(429, json={"error": {"details": []}})
-        return httpx.Response(200, json={"embeddings": [{"values": [1, 0, 0, 0]}]})
-
-    assert len(run(embedder(handler).embed(["x"], task="query"))) == 1
-    assert calls["n"] == 2
-
-
-def test_missing_key_not_configured(monkeypatch):
-    with pytest.raises(AppError) as exc:
-        GeminiEmbedder("", "gemini-embedding-2")
-    assert exc.value.code == "AI_PROVIDER_NOT_CONFIGURED"
-
-    class S:
-        gemini_api_key = None
-        gemini_embedding_model = "gemini-embedding-2"
-        embedding_dim = 768
-
-    monkeypatch.setattr(embeddings, "get_settings", lambda: S())
-    assert make_embedder() is None
-    S.gemini_api_key = SECRET
+def test_make_embedder_uses_settings_and_needs_no_key():
     e = make_embedder()
-    assert isinstance(e, GeminiEmbedder)
-    assert e.model == "gemini-embedding-2" and e.dim == 768
+    assert isinstance(e, LocalEmbedder)
+    assert e.model == "sentence-transformers/all-MiniLM-L6-v2" and e.dim == 384
 
 
-def test_default_model_and_dim_from_settings():
+def test_default_model_and_dim_match_migration():
     from app.core.config import Settings
 
     fields = Settings.model_fields
-    assert fields["gemini_embedding_model"].default == "gemini-embedding-2"
-    assert fields["embedding_dim"].default == 768
+    assert fields["embedding_model"].default == "sentence-transformers/all-MiniLM-L6-v2"
+    assert fields["embedding_dim"].default == 384
+    from pathlib import Path
+
+    migration = Path(__file__).parents[2] / "migrations/versions/0004_question_bank.py"
+    assert "vector(384)" in migration.read_text()
 
 
 def test_document_text_is_what_the_candidate_sees():
     t = document_text("What is a deadlock?", ["A wait cycle", "A crash", "A loop", "A leak"])
     assert t == "What is a deadlock?\nA. A wait cycle\nB. A crash\nC. A loop\nD. A leak"
-
-
-def test_models_prefix_stripped_from_model_name():
-    calls: list = []
-    e = embedder(ok_handler(calls), model=" models/gemini-embedding-2 ")
-    assert e.model == "gemini-embedding-2"
-    run(e.embed(["x"], task="query"))
-    req, body = calls[0]
-    assert str(req.url).endswith("/models/gemini-embedding-2:batchEmbedContents")
-    assert body["requests"][0]["model"] == "models/gemini-embedding-2"
 
 
 # ------------------------------------------------------------------ embed_source
@@ -392,19 +297,11 @@ def test_replace_during_failed_embed_does_not_write_failed_over_pending(db):
     assert db.source["embedding_status"] == "pending"
 
 
-def test_batch_3_of_5_failure_stores_nothing_and_marks_failed(db):
+def test_failure_midway_stores_nothing_and_marks_failed(db):
     db.questions = {q["id"]: q for q in (qrow(i) for i in range(450))}
-    calls: list = []
-
-    def handler(request):
-        calls.append(1)
-        if len(calls) == 3:
-            return httpx.Response(400, json={"error": {"message": "bad"}})
-        n = len(json.loads(request.content)["requests"])
-        return httpx.Response(200, json={"embeddings": [{"values": [1, 0, 0, 0]}] * n})
-
-    assert run(embed_source(SID, embedder(handler))) == "failed"
-    assert len(calls) == 3
+    e, fake = local(FakeModel(fail_after=200))
+    assert run(embed_source(SID, e)) == "failed"
+    assert len(fake.calls) == 1
     assert db.embeddings == {}
     assert db.source["embedding_status"] == "failed"
 

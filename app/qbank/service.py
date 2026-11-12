@@ -20,7 +20,6 @@ from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import PureWindowsPath
 from typing import Any
-from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import BackgroundTasks, UploadFile

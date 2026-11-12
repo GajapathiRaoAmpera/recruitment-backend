@@ -1,25 +1,19 @@
-"""Question-bank embeddings (the "R" of RAG): Gemini batchEmbedContents over httpx.
+"""Question-bank embeddings (the "R" of RAG): all-MiniLM-L6-v2 run locally with fastembed (ONNX).
+
+Free, no API key, no quota: the model (~90 MB) is downloaded once into settings.embedding_cache_dir
+on first use and runs on the server CPU, in a worker thread so the event loop is never blocked.
 
 What is embedded is what a candidate sees - the question text and its options - never the answer
-or the explanation. Vectors are requested at settings.embedding_dim dimensions (question_embeddings
-is vector(768)), validated (exact length, finite numbers) and L2-normalised before storage.
-
-The HTTP layer (POST, retry/backoff, 429 + daily-quota handling, key in the x-goog-api-key header,
-never logged) is the papers agents' _HttpJsonClient, reused as-is.
-
-API shape (ai.google.dev reference "Embedding a batch of contents", checked 2026-11):
-POST v1beta/models/{model}:batchEmbedContents
-  {"requests": [{"model": "models/{model}", "content": {"parts": [{"text": ...}]},
-                 "embedContentConfig": {"outputDimensionality": 768, "taskType": ...}}]}
--> {"embeddings": [{"values": [...]}]}, same order as the requests.
-gemini-embedding-2 does not take taskType; the task goes into the text instead
-("task: search result | query: ..." / "title: none | text: ..."). gemini-embedding-001 uses
-taskType RETRIEVAL_QUERY / RETRIEVAL_DOCUMENT.
+or the explanation. Vectors are validated (exactly settings.embedding_dim = 384 finite numbers,
+question_embeddings is vector(384)) and L2-normalised before storage. MiniLM uses no query /
+document prefixes, so `task` does not change the text.
 """
 
+import asyncio
 import json
 import logging
 import math
+import threading
 from collections.abc import Sequence
 from typing import Any, Literal, Protocol
 from uuid import UUID
@@ -28,14 +22,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import get_settings
 from app.core.db import get_engine
-from app.papers.agents import LlmOutputError, _HttpJsonClient
+from app.papers.agents import LlmOutputError
 from app.qbank import repo
 
 log = logging.getLogger(__name__)
 
 Task = Literal["document", "query"]
 
-MAX_BATCH = 100  # requests per batchEmbedContents call
+BATCH_SIZE = 64  # texts per ONNX run
 
 _LETTERS = "ABCDEFGH"
 
@@ -73,79 +67,47 @@ def check_vector(values: Any, dim: int) -> list[float]:
     return [v / norm for v in floats]
 
 
-class GeminiEmbedder(_HttpJsonClient):
-    """Gemini `models/{model}:batchEmbedContents`, <= MAX_BATCH texts per call."""
+class LocalEmbedder:
+    """fastembed TextEmbedding, loaded lazily once per process and shared (ONNX sessions are
+    heavy; a lock serialises runs so concurrent jobs never load or run it twice at once)."""
 
-    provider = "Gemini"
-    base_url = "https://generativelanguage.googleapis.com/v1beta"
+    _models: dict[tuple[str, str], Any] = {}
+    _lock = threading.Lock()
 
     def __init__(
-        self,
-        api_key: str | None = None,
-        model: str | None = None,
-        *,
-        dim: int | None = None,
-        **kw: Any,
+        self, model: str | None = None, *, dim: int | None = None, cache_dir: str | None = None
     ):
         s = get_settings()
-        name = (model or s.gemini_embedding_model).strip().removeprefix("models/")
-        super().__init__(api_key if api_key is not None else s.gemini_api_key, name, **kw)
+        self.model = model or s.embedding_model
         self.dim = dim or s.embedding_dim
+        self.cache_dir = cache_dir or s.embedding_cache_dir
 
-    @property
-    def _task_in_text(self) -> bool:
-        # gemini-embedding-2 (and its previews) take the task as a text prefix, not taskType
-        return self.model.startswith("gemini-embedding-2")
+    def __repr__(self) -> str:
+        return f"LocalEmbedder(model={self.model!r})"
 
-    def _request(self, text: str, task: Task) -> dict:
-        config: dict[str, Any] = {}
-        if self._task_in_text:
-            text = (
-                f"task: search result | query: {text}"
-                if task == "query"
-                else f"title: none | text: {text}"
-            )
-        else:
-            config["taskType"] = "RETRIEVAL_QUERY" if task == "query" else "RETRIEVAL_DOCUMENT"
-        config["outputDimensionality"] = self.dim
-        return {
-            "model": f"models/{self.model}",
-            "content": {"parts": [{"text": text}]},
-            "embedContentConfig": config,
-        }
+    def _run(self, texts: list[str]) -> list[list[float]]:
+        with self._lock:
+            key = (self.model, self.cache_dir)
+            if key not in self._models:
+                from fastembed import TextEmbedding  # import on first use: keeps startup fast
 
-    async def _batch(self, texts: Sequence[str], task: Task) -> list[list[float]]:
-        r = await self._post(
-            f"{self.base_url}/models/{self.model}:batchEmbedContents",
-            {"x-goog-api-key": self._api_key},
-            {"requests": [self._request(t, task) for t in texts]},
-        )
-        if r.is_error:
-            raise self._fail(r)
-        try:
-            items = r.json()["embeddings"]
-        except (ValueError, KeyError, TypeError) as e:
-            raise EmbeddingOutputError("Gemini reply had no embeddings") from e
-        if not isinstance(items, list) or len(items) != len(texts):
-            raise EmbeddingOutputError("Gemini returned the wrong number of embeddings")
-        return [
-            check_vector(item.get("values") if isinstance(item, dict) else None, self.dim)
-            for item in items
-        ]
+                self._models[key] = TextEmbedding(model_name=self.model, cache_dir=self.cache_dir)
+            vectors = list(self._models[key].embed(texts, batch_size=BATCH_SIZE))
+        return [check_vector([float(v) for v in vec], self.dim) for vec in vectors]
 
     async def embed(self, texts: Sequence[str], *, task: Task) -> list[list[float]]:
-        out: list[list[float]] = []
-        for i in range(0, len(texts), MAX_BATCH):
-            out.extend(await self._batch(texts[i : i + MAX_BATCH], task))
+        if not texts:
+            return []
+        out = await asyncio.to_thread(self._run, list(texts))
+        if len(out) != len(texts):
+            raise EmbeddingOutputError("embedder returned the wrong number of vectors")
         return out
 
 
-def make_embedder() -> GeminiEmbedder | None:
-    """The configured embedder, or None when no Gemini key is set (banks stay 'skipped')."""
-    s = get_settings()
-    if not s.gemini_api_key:
-        return None
-    return GeminiEmbedder(s.gemini_api_key, s.gemini_embedding_model, dim=s.embedding_dim)
+def make_embedder() -> Embedder:
+    """The configured embedder (local, always available; a failed model download marks the
+    bank 'failed' and retrieval falls back to its deterministic order)."""
+    return LocalEmbedder()
 
 
 def open_session() -> AsyncSession:
@@ -270,13 +232,11 @@ async def run_reembed_question(question_id: UUID) -> bool | None:
     short read of text + options; embed outside any session; short write that locks the
     question and stores the vector only if its current text + options still equal what was
     embedded (a newer edit or a replace wins). Returns True when stored, False when dropped
-    or failed, None when skipped (no key) or the question is gone. Never raises; logs only
+    or failed, None when the question is gone. Never raises; logs only
     exception type names.
     """
     try:
         embedder = make_embedder()
-        if embedder is None:
-            return None  # no key: stays without a vector, retrieval ranks it last
         async with open_session() as session:
             row = await repo.get_question(session, question_id)
         if row is None:
@@ -288,7 +248,8 @@ async def run_reembed_question(question_id: UUID) -> bool | None:
             if current is None or _row_text(current) != embedded:
                 return False  # edited again or replaced meanwhile: its own job embeds it
             await repo.upsert_embeddings(
-                session, [{"question_id": question_id, "embedding": vector, "model": embedder.model}]
+                session,
+                [{"question_id": question_id, "embedding": vector, "model": embedder.model}],
             )
             await session.commit()
             return True

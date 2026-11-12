@@ -171,8 +171,6 @@ def test_technical_ids_are_new_per_draft_and_keep_source_id(fake_bank):
         src = by_id[q.source_id]
         assert q.text == src.text and q.options == src.options and q.answer == src.answer
         assert q.topic == f"{src.subject} / {src.topic}" and q.level == src.level
-        assert q.id == str(uuid.uuid5(pool.draft_namespace(q_seed := None or ""), "x")) or True
-    assert a[0].id == str(uuid.uuid5(pool.draft_namespace(str(a_seed := "")), "")) or True
 
 
 def test_technical_id_formula_is_stable_for_a_draft(fake_bank):
@@ -205,7 +203,9 @@ def test_technical_sample_keeps_subject_proportions(fake_bank):
 def test_subjects_and_focus_are_passed_to_retrieval(fake_bank):
     fb = fake_bank()
     emb = object()
-    settings = make_settings(subjects={SUBJECTS[0]: 60, SUBJECTS[1]: 40}, focus="process scheduling")
+    settings = make_settings(
+        subjects={SUBJECTS[0]: 60, SUBJECTS[1]: 40}, focus="process scheduling"
+    )
     build(settings, embedder=emb)
     call = fb.calls[0]
     assert call["subjects"] == {SUBJECTS[0]: 60, SUBJECTS[1]: 40}
