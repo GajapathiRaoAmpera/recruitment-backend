@@ -8,6 +8,7 @@ from app.core.errors import install_error_handlers
 from app.drives.router import router as drives_router
 from app.execution.coding_questions.router import router as coding_questions_router
 from app.execution.router import router as execution_router
+from app.execution.test_config.router import router as test_config_router
 from app.papers.router import router as papers_router
 from app.qbank.limits import QbankBodyLimit
 from app.qbank.router import router as qbank_router
@@ -34,6 +35,7 @@ api.include_router(papers_router)
 api.include_router(qbank_router)
 api.include_router(execution_router)
 api.include_router(coding_questions_router)
+api.include_router(test_config_router)
 app.include_router(api)
 
 
