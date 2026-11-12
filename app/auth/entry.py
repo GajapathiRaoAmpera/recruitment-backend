@@ -17,6 +17,7 @@ from app.core.db import get_session
 from app.core.errors import AppError
 
 ENTRY_TTL = 2 * 3600
+ATTEMPT_TTL = 2 * 3600
 MAX_FAILURES = 5  # wrong-DOB tries per candidate per 15 min
 
 
@@ -88,3 +89,38 @@ async def current_entry(
     if creds is None:
         raise AppError(401, "UNAUTHENTICATED", "Verify your identity first")
     return Entry(UUID(_decode(creds.credentials)["cid"]))
+
+
+def issue_attempt_token(attempt_id: UUID, candidate_id: UUID) -> str:
+    """Scoped to ONE attempt of ONE candidate. Same key as the entry token, different `typ`."""
+    claims = {
+        "typ": "attempt",
+        "aid": str(attempt_id),
+        "cid": str(candidate_id),
+        "exp": time.time() + ATTEMPT_TTL,
+    }
+    return jwt.encode(claims, get_settings().entry_signing_key, algorithm="HS256")
+
+
+def _decode_attempt(token: str) -> tuple[UUID, UUID]:
+    try:
+        claims = jwt.decode(
+            token,
+            get_settings().entry_signing_key,
+            algorithms=["HS256"],
+            options={"require": ["exp", "aid", "cid", "typ"]},
+        )
+        if claims["typ"] != "attempt":  # an entry token must not work here
+            raise jwt.InvalidTokenError("wrong token type")
+        return UUID(claims["aid"]), UUID(claims["cid"])
+    except (jwt.PyJWTError, ValueError) as e:
+        raise AppError(401, "INVALID_TOKEN", "Sign in again") from e
+
+
+async def current_attempt(
+    creds: HTTPAuthorizationCredentials | None = Depends(bearer),
+) -> tuple[UUID, UUID]:
+    """Auth dependency for the test-taking routes: (attempt_id, candidate_id)."""
+    if creds is None:
+        raise AppError(401, "UNAUTHENTICATED", "Sign in required")
+    return _decode_attempt(creds.credentials)
