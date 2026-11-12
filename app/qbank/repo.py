@@ -2,7 +2,7 @@
 retrieval. Rows come back as RowMapping (dict-like); the caller owns the transaction.
 
 Bank questions live in the shared `questions` table (kind 'mcq', ai_generated false, approved
-false on insert) with source_id / subject / topic / source_number / warnings (migration 0003).
+false on insert) with source_id / subject / topic / source_number / warnings (migration 0004).
 Deleting a source removes its questions and embeddings through the FK cascades.
 """
 

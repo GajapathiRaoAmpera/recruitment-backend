@@ -258,7 +258,7 @@ create index paper_drafts_drive_ref_idx on paper_drafts (drive_ref);
 alter table paper_drafts enable row level security;
 alter table paper_issues enable row level security;
 
--- 0003_question_bank: uploaded MCQ PDF banks + RAG embeddings (pgvector). Written, not applied.
+-- 0004_question_bank: uploaded MCQ PDF banks + RAG embeddings (pgvector). Written, not applied.
 create extension if not exists vector;
 
 create table question_sources (                         -- one uploaded bank file
@@ -287,7 +287,7 @@ alter table questions add column warnings text[] not null default '{}';  -- pars
 
 create table question_embeddings (
   question_id  uuid primary key references questions(id) on delete cascade,
-  embedding    vector(768) not null,                    -- = settings.embedding_dim
+  embedding    vector(384) not null,                    -- = settings.embedding_dim (all-MiniLM-L6-v2)
   model        text not null
 );
 

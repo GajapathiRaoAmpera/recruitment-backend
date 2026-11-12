@@ -15,6 +15,7 @@ from app.core.audit import audit
 from app.core.db import get_engine
 from app.core.errors import AppError
 from app.papers import agents, builder, repo
+from app.papers import pool as pipeline
 from app.papers.agents import OnProgress
 from app.papers.schemas import (
     DraftDetail,
@@ -27,6 +28,7 @@ from app.papers.schemas import (
     QuestionEdit,
     SendResult,
 )
+from app.qbank.embeddings import make_embedder
 
 log = logging.getLogger(__name__)
 
@@ -149,19 +151,32 @@ def ai_status() -> dict[str, bool]:
     return agents.providers_status()
 
 
+# IT: generators + PDF bank + Gemini composer. Non-IT: Technical still generated (Gemini) and
+# verified blind (Groq).
+REQUIRED_PROVIDERS = {"it": ("gemini",), "non_it": ("gemini", "groq")}
+
+
 def open_session() -> AsyncSession:
     """A session of its own for background work (the request session is closed by then)."""
     return async_sessionmaker(get_engine(), expire_on_commit=False)()
 
 
 async def build_pool(
-    settings: PaperSettings, *, on_progress: OnProgress, overrides: Mapping[str, str] | None
+    settings: PaperSettings,
+    *,
+    on_progress: OnProgress,
+    overrides: Mapping[str, str] | None,
+    session: AsyncSession,
+    draft_id: UUID,
 ) -> list[PoolQuestion]:
-    """The network step (Gemini generates, Groq verifies). Tests monkeypatch this."""
-    generator = agents.GeminiClient()
-    verifier = agents.GroqClient()
-    return await agents.generate_pool(
-        generator, verifier, settings, on_progress=on_progress, overrides=overrides
+    """The network step (see app.papers.pool). Tests monkeypatch this."""
+    return await pipeline.build_pool(
+        session,
+        settings,
+        on_progress=on_progress,
+        overrides=overrides,
+        draft_id=draft_id,
+        embedder=make_embedder(),
     )
 
 
@@ -181,12 +196,18 @@ async def run_generation(draft_id: UUID, actor_id: UUID) -> None:
                     await session.commit()
 
                 overrides = await repo.get_prompt_overrides(session)
-                pool = await build_pool(settings, on_progress=on_progress, overrides=overrides)
-                checks = _checks(settings, d["drive_ref"], pool)
+                questions = await build_pool(
+                    settings,
+                    on_progress=on_progress,
+                    overrides=overrides,
+                    session=session,
+                    draft_id=draft_id,
+                )
+                checks = _checks(settings, d["drive_ref"], questions)
                 finished = await repo.finish_generation(
                     session,
                     draft_id,
-                    [q.model_dump() for q in pool],
+                    [q.model_dump() for q in questions],
                     [c.model_dump() for c in checks],
                 )
                 if not finished:  # timed out (reported failed) or no longer generating
@@ -199,7 +220,7 @@ async def run_generation(draft_id: UUID, actor_id: UUID) -> None:
                     "paper_draft.generated",
                     ENTITY,
                     draft_id,
-                    {"pool_size": len(pool), "checks_ok": all(c.ok for c in checks)},
+                    {"pool_size": len(questions), "checks_ok": all(c.ok for c in checks)},
                 )
                 await session.commit()
             except Exception as e:
@@ -239,7 +260,8 @@ async def create_draft(
     title: str,
     settings: PaperSettings,
 ) -> DraftOut:
-    missing = [name for name, ok in ai_status().items() if not ok]
+    status = ai_status()
+    missing = [p for p in REQUIRED_PROVIDERS[settings.track] if not status.get(p)]
     if missing:
         raise AppError(
             503,

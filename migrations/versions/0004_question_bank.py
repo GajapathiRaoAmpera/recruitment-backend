@@ -1,20 +1,20 @@
 """question bank: question_sources, question_embeddings (pgvector), questions bank columns
 
-Revision ID: 0003
-Revises: 0002
+Revision ID: 0004
+Revises: 0003
 Create Date: 2026-11-12
 """
 
 from alembic import op
 
-revision = "0003"
-down_revision = "0002"
+revision = "0004"
+down_revision = "0003"
 branch_labels = None
 depends_on = None
 
 # asyncpg runs ONE statement per op.execute.
 # No colon+word in this SQL: op.execute wraps it in text(), which reads that as a bind param.
-# Embedding size 768 = settings.embedding_dim (Gemini embeddings requested at 768 dimensions);
+# Embedding size 384 = settings.embedding_dim (all-MiniLM-L6-v2, run locally with fastembed);
 # changing it needs a new migration that rebuilds question_embeddings.
 UPGRADE = [
     "create extension if not exists vector",
@@ -47,7 +47,7 @@ UPGRADE = [
     """
     create table question_embeddings (
       question_id  uuid primary key references questions(id) on delete cascade,
-      embedding    vector(768) not null,
+      embedding    vector(384) not null,
       model        text not null
     )""",
     "create index questions_source_id_idx on questions (source_id)",

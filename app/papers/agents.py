@@ -41,6 +41,8 @@ OnProgress = Callable[[int, int], Awaitable[None]]
 
 PROMPT_GEN_PREFIX = "paper_gen_"  # paper_gen_aptitude | paper_gen_reasoning | paper_gen_technical
 PROMPT_VERIFY = "paper_verify"
+PROMPT_COMPOSE = "paper_compose"
+COMPOSE_TEXT_CHARS = 200  # stem characters the composer sees per candidate
 
 _JSON_SHAPE = (
     "Reply with JSON only, exactly this shape:\n"
@@ -86,6 +88,14 @@ DEFAULT_PROMPTS: dict[str, str] = {
         "correct or more than one is equally correct, answer -1.\n"
         "Reply with JSON only, exactly this shape: "
         '{"work": "<your short working>", "answer": <0-3 or -1>}'
+    ),
+    PROMPT_COMPOSE: (
+        "You assemble the question pool for a campus recruitment screening test. You get "
+        "candidate questions (id, level, section, topic, start of the text) grouped into cells "
+        "of level/section, and how many to keep in each cell. Keep exactly that many per cell. "
+        "Cover the topics of a cell as evenly as you can and drop near-duplicates (questions "
+        "that test the same fact or differ only in numbers or wording).\n"
+        'Reply with JSON only, exactly this shape: {"keep": ["<id>", "<id>", ...]}'
     ),
 }
 
@@ -682,9 +692,21 @@ def _cell_plans(
     return plans
 
 
-def plan_batches(settings: PaperSettings) -> list[BatchPlan]:
+def _wanted(
+    settings: PaperSettings, sections: Sequence[Section]
+) -> dict[Level, dict[Section, int]]:
+    """needed(settings) with the sections outside `sections` set to 0."""
+    return {
+        lv: {s: (n if s in sections else 0) for s, n in cells.items()}
+        for lv, cells in needed(settings).items()
+    }
+
+
+def plan_batches(
+    settings: PaperSettings, sections: Sequence[Section] = SECTIONS
+) -> list[BatchPlan]:
     """Batches (<= BATCH_SIZE) covering needed(settings) x pool_factor, topics rotated."""
-    want = needed(settings)
+    want = _wanted(settings, sections)
     return [
         plan
         for level in LEVELS
@@ -702,8 +724,10 @@ async def generate_pool(
     *,
     on_progress: OnProgress,
     overrides: Mapping[str, str] | None = None,
+    sections: Sequence[Section] = SECTIONS,
 ) -> list[PoolQuestion]:
     """Build the verified pool: needed x pool_factor per level+section, at most 3 batches at once.
+    `sections` limits generation to those sections (the others are left to other sources).
 
     on_progress(done, total) drives a progress bar, so it never moves backwards: `total` is
     fixed from the first call and counts every planned question plus a reserve of one unit per
@@ -711,8 +735,8 @@ async def generate_pool(
     success the last call is (total, total). Raises POOL_TOO_SMALL (422) when the survivors
     cannot cover the paper itself.
     """
-    want = needed(settings)
-    plans = plan_batches(settings)
+    want = _wanted(settings, sections)
+    plans = plan_batches(settings, sections)
     planned = sum(p.count for p in plans)
     reserve = sum(1 for level in LEVELS for section in SECTIONS if want[level][section] > 0)
     total = planned + reserve
@@ -800,3 +824,109 @@ async def generate_pool(
     if done < total:
         await report(total)  # no top-up needed: the reserve is simply complete
     return pool
+
+
+# --------------------------------------------------------------------------------------------
+# Composer: one call that picks which candidates of each level/section cell are selected
+# --------------------------------------------------------------------------------------------
+
+
+def _compose_prompt(
+    sent: Sequence[PoolQuestion],
+    target: Mapping[tuple[Level, Section], int],
+    counts: Mapping[tuple[Level, Section], int],
+    overrides: Mapping[str, str] | None,
+    problem: str | None,
+) -> tuple[str, str]:
+    """No options, answers or explanations: only id, cell, topic and the start of the stem."""
+    lines = ["Keep exactly:"]
+    lines += [f"- {lv}/{s}: keep {target[(lv, s)]} of {counts[(lv, s)]}" for lv, s in counts]
+    lines.append("Candidates (one JSON object per line):")
+    lines += [
+        json.dumps(
+            {
+                "id": q.id,
+                "level": q.level,
+                "section": q.section,
+                "topic": q.topic,
+                "text": " ".join(q.text.split())[:COMPOSE_TEXT_CHARS],
+            },
+            ensure_ascii=False,
+        )
+        for q in sent
+    ]
+    if problem:
+        lines.append(f"Your previous reply was rejected: {problem}. Follow the counts exactly.")
+    return get_prompt(PROMPT_COMPOSE, overrides), "\n".join(lines)
+
+
+def _compose_problem(
+    raw: Any,
+    cell_of: Mapping[str, tuple[Level, Section]],
+    target: Mapping[tuple[Level, Section], int],
+) -> str | None:
+    keep = raw.get("keep") if isinstance(raw, dict) else None
+    if not isinstance(keep, list) or not all(isinstance(i, str) for i in keep):
+        return 'the reply must be {"keep": [<id strings>]}'
+    if len(set(keep)) != len(keep):
+        return "ids were repeated"
+    unknown = [i for i in keep if i not in cell_of]
+    if unknown:
+        return f"{len(unknown)} id(s) are not candidates"
+    got: dict[tuple[Level, Section], int] = {}
+    for i in keep:
+        got[cell_of[i]] = got.get(cell_of[i], 0) + 1
+    wrong = [
+        f"{lv}/{s}: {got.get((lv, s), 0)} instead of {n}"
+        for (lv, s), n in target.items()
+        if got.get((lv, s), 0) != n
+    ]
+    return "wrong counts (" + "; ".join(wrong) + ")" if wrong else None
+
+
+async def compose_selection(
+    client: LlmClient,
+    candidates: Sequence[PoolQuestion],
+    target: Mapping[tuple[Level, Section], int],
+    *,
+    overrides: Mapping[str, str] | None = None,
+) -> set[str]:
+    """Ids to keep: exactly target[(level, section)] per cell. Cells kept whole (or emptied) need
+    no model; the rest go to ONE call, validated by code, retried once, else 502
+    AI_COMPOSE_INVALID. Provider errors (AppError) propagate without a retry."""
+    by_cell: dict[tuple[Level, Section], list[PoolQuestion]] = {}
+    for q in candidates:
+        by_cell.setdefault((q.level, q.section), []).append(q)
+    keep: set[str] = set()
+    choose: dict[tuple[Level, Section], int] = {}
+    for cell, n in target.items():
+        have = by_cell.get(cell, [])
+        if n > len(have):
+            raise ValueError(f"target {n} for {cell} exceeds its {len(have)} candidates")
+        if n == len(have):
+            keep.update(q.id for q in have)
+        elif n > 0:
+            choose[cell] = n
+    if not choose:
+        return keep
+    sent = [q for cell in choose for q in by_cell[cell]]
+    cell_of = {q.id: (q.level, q.section) for q in sent}
+    counts = {cell: len(by_cell[cell]) for cell in choose}
+    problem: str | None = None
+    for _ in range(2):
+        system, user = _compose_prompt(sent, choose, counts, overrides, problem)
+        try:
+            raw = await client.complete_json(system=system, user=user)
+        except LlmOutputError:
+            problem = "it was not valid JSON"
+            continue
+        problem = _compose_problem(raw, cell_of, choose)
+        if problem is None:
+            return keep | set(raw["keep"])
+    log.warning("composer reply invalid twice (%s)", problem)
+    raise AppError(
+        502,
+        "AI_COMPOSE_INVALID",
+        "The AI could not pick the sample paper questions. Try generating again.",
+        {"reason": problem},
+    )

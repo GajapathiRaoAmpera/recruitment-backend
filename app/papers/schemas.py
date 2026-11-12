@@ -32,6 +32,9 @@ class PaperSettings(BaseModel):
     different_per_student: bool = True
     shuffle_questions: bool = True
     shuffle_options: bool = True
+    # IT Technical from the PDF banks: subject weights (None = even split) and a retrieval focus
+    subjects: dict[str, int] | None = None
+    focus: str | None = Field(default=None, max_length=200)
 
     @model_validator(mode="after")
     def _check(self) -> "PaperSettings":
@@ -41,6 +44,15 @@ class PaperSettings(BaseModel):
             raise ValueError("counts must total at least 1")
         if sum(self.mix.values()) != 100:
             raise ValueError("mix must sum to 100")
+        if self.subjects is not None:
+            if any(not k.strip() for k in self.subjects):
+                raise ValueError("subject names must not be blank")
+            if any(v < 0 or v > 100 for v in self.subjects.values()):
+                raise ValueError("each subject weight must be between 0 and 100")
+            if sum(self.subjects.values()) != 100:
+                raise ValueError("subject weights must sum to 100")
+        if self.focus is not None:
+            self.focus = " ".join(self.focus.split()) or None
         return self
 
 
@@ -58,6 +70,7 @@ class PoolQuestion(BaseModel):
     edited: bool = False
     verified: bool = True
     selected: bool = True  # HR's pick: only selected questions reach students
+    source_id: str | None = None  # question-bank question this was copied from (IT Technical)
 
 
 class PaperItem(BaseModel):

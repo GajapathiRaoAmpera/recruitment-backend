@@ -19,16 +19,18 @@ class Settings(BaseSettings):
     # question-bank PDFs are saved here (same local-disk shortcut as resume_dir)
     qbank_dir: str = "storage/qbank"
     qbank_max_mb: int = 20  # upload size limit for a question-bank PDF
-    embedding_dim: int = 768  # must match question_embeddings.embedding vector(768) (0003)
+    # question-bank RAG embeddings: free local model via fastembed (no API key). embedding_dim
+    # must match question_embeddings.embedding vector(384) (0004); changing the model needs a
+    # new migration and a re-embed of every bank.
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_dim: int = 384
+    embedding_cache_dir: str = "storage/models"  # model files (~90 MB), downloaded on first use
     frontend_url: str = "http://localhost:3000"  # invite emails link back here
     # Round 1 paper builder LLMs. Keys are server only; missing => AI_PROVIDER_NOT_CONFIGURED
     gemini_api_key: str | None = None
     groq_api_key: str | None = None
     gemini_model: str = "gemini-3.6-flash"  # generator (ai.google.dev/gemini-api/docs/models)
     groq_model: str = "openai/gpt-oss-120b"  # blind verifier (console.groq.com/docs/models)
-    # question-bank RAG embeddings (ai.google.dev/gemini-api/docs/embeddings); requested at
-    # embedding_dim dimensions. Changing the model needs a re-embed of every bank.
-    gemini_embedding_model: str = "gemini-embedding-2"
 
     @field_validator("database_url")
     @classmethod
