@@ -6,9 +6,13 @@ from app.candidates.router import router as candidates_router
 from app.core.errors import install_error_handlers
 from app.drives.router import router as drives_router
 from app.papers.router import router as papers_router
+from app.qbank.limits import QbankBodyLimit
+from app.qbank.router import router as qbank_router
 
 app = FastAPI(title="Ampera Campus Hire API", version="0.1.0")
 install_error_handlers(app)
+# rejects oversize question-bank uploads before their body is spooled to disk
+app.add_middleware(QbankBodyLimit)
 
 api = APIRouter(prefix="/api/v1")  # feature routers are included here
 
@@ -23,6 +27,7 @@ api.include_router(admin_router)
 api.include_router(candidates_router)
 api.include_router(drives_router)
 api.include_router(papers_router)
+api.include_router(qbank_router)
 app.include_router(api)
 
 

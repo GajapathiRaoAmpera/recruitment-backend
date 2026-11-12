@@ -16,12 +16,19 @@ class Settings(BaseSettings):
     resume_dir: str = (
         "storage/resumes"  # resume PDFs are saved here (relative to where you start the app)
     )
+    # question-bank PDFs are saved here (same local-disk shortcut as resume_dir)
+    qbank_dir: str = "storage/qbank"
+    qbank_max_mb: int = 20  # upload size limit for a question-bank PDF
+    embedding_dim: int = 768  # must match question_embeddings.embedding vector(768) (0003)
     frontend_url: str = "http://localhost:3000"  # invite emails link back here
     # Round 1 paper builder LLMs. Keys are server only; missing => AI_PROVIDER_NOT_CONFIGURED
     gemini_api_key: str | None = None
     groq_api_key: str | None = None
     gemini_model: str = "gemini-3.6-flash"  # generator (ai.google.dev/gemini-api/docs/models)
     groq_model: str = "openai/gpt-oss-120b"  # blind verifier (console.groq.com/docs/models)
+    # question-bank RAG embeddings (ai.google.dev/gemini-api/docs/embeddings); requested at
+    # embedding_dim dimensions. Changing the model needs a re-embed of every bank.
+    gemini_embedding_model: str = "gemini-embedding-2"
 
     @field_validator("database_url")
     @classmethod
