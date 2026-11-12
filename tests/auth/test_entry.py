@@ -18,6 +18,7 @@ ROW = {
     "round_id": RID,
     "round_type": "aptitude",
     "test_id": None,
+    "duration_min": 30.0,
 }
 LOGS: list = []
 FAILS = [0]
@@ -64,6 +65,7 @@ def test_verify_ok_returns_entry_token_rounds_and_logs():
     r = client.post("/api/v1/entry/verify", json=body(student_id=" s101 "))
     assert r.status_code == 200 and r.json()["candidate"]["full_name"] == "Asha"
     assert r.json()["rounds"][0]["round_id"] == str(RID)
+    assert r.json()["rounds"][0]["duration_min"] == 30.0  # drives the exam timer
     assert LOGS == [(CID, RID, "id_dob", True)]
 
 

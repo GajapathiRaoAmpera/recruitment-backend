@@ -73,6 +73,7 @@ async def verify(session: AsyncSession, body: VerifyIn, meta: dict) -> VerifyOut
                 "round_id": str(r["round_id"]),
                 "type": r["round_type"],
                 "test_id": str(r["test_id"]) if r["test_id"] else None,
+                "duration_min": r["duration_min"],
             }
             for r in mine
             if r["candidate_id"] == cid

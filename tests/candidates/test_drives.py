@@ -88,6 +88,7 @@ def test_create_saves_chosen_rounds_in_order():
                         params["mode"],
                         params["status"],
                         params["threshold"],
+                        params["duration"],
                     )
                 )
                 return Result([])
@@ -105,7 +106,7 @@ def test_create_saves_chosen_rounds_in_order():
         "jd_text": "J",
         "rounds": [
             {"type": "shortlist"},
-            {"type": "aptitude", "threshold": 70},
+            {"type": "aptitude", "threshold": 70, "duration_min": 45},
             {"type": "technical", "mode": "manual"},
             {"type": "final", "mode": "manual"},
         ],
@@ -113,10 +114,10 @@ def test_create_saves_chosen_rounds_in_order():
     r = TestClient(app).post("/api/v1/drives", json=body)
     assert r.status_code == 201
     assert inserts == [
-        (0, "shortlist", "auto", "active", None),
-        (1, "aptitude", "auto", "active", 70.0),
-        (2, "technical", "manual", "pending", None),
-        (3, "final", "manual", "pending", None),
+        (0, "shortlist", "auto", "active", None, None),
+        (1, "aptitude", "auto", "active", 70.0, 45.0),  # cut-off % and minutes are separate columns
+        (2, "technical", "manual", "pending", None, None),
+        (3, "final", "manual", "pending", None, None),
     ]
 
 

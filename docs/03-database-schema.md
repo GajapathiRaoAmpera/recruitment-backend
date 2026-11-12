@@ -276,3 +276,6 @@ end $$;
 - A pool question is written to `questions` once (same id, `on conflict (id) do nothing`), on the first send; `persisted_at` records it.
 - `paper_issues` rows are never rewritten: sending again to the same candidate is a no-op.
 - A draft in `generating` for more than 15 minutes is reported as `failed` ("Generation timed out") on read.
+
+## 0003_round_duration
+`rounds."Duration" double precision` (nullable): minutes the round's test runs, saved from the drive wizard. The name is quoted with a capital D because it was first created by hand in Supabase; always write it as `"Duration"` in SQL. `rounds.threshold` stays the cut-off %.

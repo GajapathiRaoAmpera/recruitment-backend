@@ -35,7 +35,7 @@ async def find_by_student_id(session: AsyncSession, student_id: str):
     result = await session.execute(
         text(
             "select c.id as candidate_id, c.dob, c.full_name, r.id as round_id, "
-            "r.type as round_type, t.id as test_id "
+            'r.type as round_type, t.id as test_id, r."Duration" as duration_min '
             "from candidates c "
             "join round_candidates rc on rc.candidate_id = c.id "
             "and rc.status in ('invited', 'in_progress') "

@@ -11,14 +11,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 class RoundIn(BaseModel):
     type: Literal["shortlist", "aptitude", "coding", "ai_interview", "technical", "final"]
     mode: Literal["ai", "manual", "auto"] = "auto"
-    threshold: float | None = Field(None, ge=0, le=100)  # cut-off %; minutes are set with the test
+    threshold: float | None = Field(None, ge=0, le=100)  # cut-off %
+    duration_min: float | None = Field(
+        None, gt=0, le=600
+    )  # minutes the test runs; column "Duration"
 
 
 DEFAULT_ROUNDS = [
     RoundIn(type="shortlist"),
-    RoundIn(type="aptitude", threshold=60),
-    RoundIn(type="coding", threshold=50),
-    RoundIn(type="ai_interview", mode="ai"),
+    RoundIn(type="aptitude", threshold=60, duration_min=30),
+    RoundIn(type="coding", threshold=50, duration_min=60),
+    RoundIn(type="ai_interview", mode="ai", duration_min=20),
     RoundIn(type="final", mode="manual"),
 ]
 
@@ -49,9 +52,10 @@ async def create_rounds(session: AsyncSession, drive_id: UUID, rounds: list[Roun
     for i, r in enumerate(rounds):
         await session.execute(
             text(
-                "insert into rounds (drive_id, position, type, mode, status, threshold) values "
+                "insert into rounds "
+                '(drive_id, position, type, mode, status, threshold, "Duration") values '
                 "(:d, :pos, cast(:type as round_type), cast(:mode as round_mode), "
-                "cast(:status as round_status), :threshold)"
+                "cast(:status as round_status), :threshold, :duration)"
             ),
             {
                 "d": drive_id,
@@ -60,6 +64,7 @@ async def create_rounds(session: AsyncSession, drive_id: UUID, rounds: list[Roun
                 "mode": r.mode,
                 "status": "active" if i <= 1 else "pending",
                 "threshold": r.threshold,
+                "duration": r.duration_min,
             },
         )
 

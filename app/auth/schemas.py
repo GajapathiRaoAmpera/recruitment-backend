@@ -24,7 +24,7 @@ class VerifyIn(BaseModel):
 class VerifyOut(BaseModel):
     entry_token: str
     candidate: dict[str, str]
-    rounds: list[dict[str, str | None]]
+    rounds: list[dict[str, str | float | None]]  # round_id, type, test_id, duration_min
 
 
 class StepIn(BaseModel):
