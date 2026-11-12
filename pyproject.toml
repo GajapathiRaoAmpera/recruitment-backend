@@ -6,8 +6,13 @@ dependencies = [
     "alembic>=1.20.1",
     "asyncpg>=0.32.0",
     "fastapi[standard]>=0.162.4",
+    "fastembed>=0.9.1",
+    "openpyxl>=3.1.5",
+    "pdf2image>=1.17.0",
+    "pdfplumber>=0.11.10",
     "pydantic-settings>=2.16.2",
     "pyjwt[crypto]>=2.15.1",
+    "pytesseract>=0.3.13",
     "sqlalchemy[asyncio]>=2.1.8",
 ]
 

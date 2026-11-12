@@ -152,6 +152,7 @@ async def persist_questions(session: AsyncSession, draft_id: UUID, pool: Sequenc
             "section": q["section"],
             "style": q["style"],
             "explanation": q["why"],
+            "source_id": q.get("source_id"),
         }
         for q in pool
     ]
@@ -162,12 +163,14 @@ async def persist_questions(session: AsyncSession, draft_id: UUID, pool: Sequenc
                 "insert into questions (id, kind, body, options, answer, tags, difficulty, "
                 "ai_generated, approved, created_by, explanation) "
                 "select r.id, cast('mcq' as question_kind), r.body, r.options, r.answer, "
-                "array['paper:' || d.id::text, 'track:' || d.track, 'section:' || r.section, "
-                "'style:' || r.style], cast(r.difficulty as difficulty), true, true, "
+                # source tag = the bank question a copy came from; null (generated) is removed
+                "array_remove(array['paper:' || d.id::text, 'track:' || d.track, "
+                "'section:' || r.section, 'style:' || r.style, 'source:' || r.source_id], null), "
+                "cast(r.difficulty as difficulty), true, true, "
                 "d.owner_id, r.explanation "
                 "from paper_drafts d cross join jsonb_to_recordset(cast(:items as jsonb)) as "
                 "r(id uuid, body text, options jsonb, answer jsonb, difficulty text, "
-                "section text, style text, explanation text) "
+                "section text, style text, explanation text, source_id text) "
                 "where d.id = :id "
                 "on conflict (id) do nothing returning id"
             ),

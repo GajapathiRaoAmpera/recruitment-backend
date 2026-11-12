@@ -184,7 +184,7 @@ def db(monkeypatch):
     monkeypatch.setattr(service, "open_session", lambda: bg_session)
     monkeypatch.setattr(service, "ai_status", lambda: {"gemini": True, "groq": True})
 
-    async def fake_pool(settings, *, on_progress, overrides):
+    async def fake_pool(settings, *, on_progress, overrides, **_):
         await on_progress(0, 4)
         await on_progress(4, 4)
         return make_pool(settings)
@@ -268,11 +268,19 @@ def test_create_starts_generation_and_audits(db, monkeypatch):
 
 def test_create_503_when_keys_missing(db, monkeypatch):
     monkeypatch.setattr(service, "ai_status", lambda: {"gemini": True, "groq": False})
-    r = create(as_user(HR))
+    r = create(as_user(HR), settings=SETTINGS | {"track": "non_it"})  # Non-IT verifies with Groq
     assert r.status_code == 503
     err = r.json()["error"]
     assert err["code"] == "AI_PROVIDER_NOT_CONFIGURED" and err["details"] == {"providers": ["groq"]}
     assert db["drafts"] == {} and db["audits"] == []
+
+
+def test_it_create_needs_only_gemini(db, monkeypatch):
+    monkeypatch.setattr(service, "ai_status", lambda: {"gemini": True, "groq": False})
+    assert create(as_user(HR)).status_code == 201
+    monkeypatch.setattr(service, "ai_status", lambda: {"gemini": False, "groq": True})
+    r = create(as_user(HR))
+    assert r.status_code == 503 and r.json()["error"]["details"] == {"providers": ["gemini"]}
 
 
 def test_ai_status_reports_booleans_only(db, monkeypatch):
@@ -306,7 +314,7 @@ def test_generation_success_sets_draft_with_checks(db):
     ],
 )
 def test_generation_failure_sets_failed_with_message(db, monkeypatch, exc, message):
-    async def boom(settings, *, on_progress, overrides):
+    async def boom(settings, *, on_progress, overrides, **_):
         await on_progress(0, 4)
         raise exc
 
