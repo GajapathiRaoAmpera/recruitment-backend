@@ -258,6 +258,44 @@ create index paper_drafts_drive_ref_idx on paper_drafts (drive_ref);
 alter table paper_drafts enable row level security;
 alter table paper_issues enable row level security;
 
+-- 0003_question_bank: uploaded MCQ PDF banks + RAG embeddings (pgvector). Written, not applied.
+create extension if not exists vector;
+
+create table question_sources (                         -- one uploaded bank file
+  id                uuid primary key default gen_random_uuid(),
+  name              text not null,
+  filename          text not null,                     -- original upload name
+  storage_key       text not null,                     -- UUID; file at QBANK_DIR/<key>.pdf
+  sha256            text not null unique,              -- duplicate-upload guard
+  track             text not null check (track in ('it', 'non_it')),
+  notes             text,
+  status            text not null default 'ready' check (status in ('ready', 'failed')),
+  is_active         boolean not null default true,     -- false = hidden from new papers
+  uploaded_by       uuid not null references users(id),
+  report            jsonb not null default '{}',       -- parser ParseReport
+  embedding_status  text not null default 'pending'
+                    check (embedding_status in ('pending', 'done', 'failed', 'skipped')),
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
+);
+
+alter table questions add column source_id uuid references question_sources(id) on delete cascade;
+alter table questions add column subject text;          -- bank subject heading
+alter table questions add column topic text;
+alter table questions add column source_number int;     -- number within its subject in the PDF
+alter table questions add column warnings text[] not null default '{}';  -- parse warnings
+
+create table question_embeddings (
+  question_id  uuid primary key references questions(id) on delete cascade,
+  embedding    vector(768) not null,                    -- = settings.embedding_dim
+  model        text not null
+);
+
+create index questions_source_id_idx on questions (source_id);
+create index questions_subject_idx on questions (subject);
+alter table question_sources enable row level security;
+alter table question_embeddings enable row level security;
+
 -- D8: RLS on, no policies → anon/authenticated keys read nothing. API uses the service connection.
 do $$ declare t text; begin
   for t in select tablename from pg_tables where schemaname = 'public' loop
@@ -275,4 +313,8 @@ end $$;
 - `paper_drafts.pool` changes only while `status = 'draft'`; `accepted` is reached only from `draft` and freezes it.
 - A pool question is written to `questions` once (same id, `on conflict (id) do nothing`), on the first send; `persisted_at` records it.
 - `paper_issues` rows are never rewritten: sending again to the same candidate is a no-op.
+- Bank questions (`questions.source_id is not null`) are inserted `approved = false`; only approved questions of `is_active` + `status = 'ready'` sources are retrieved for papers. Deleting a source hard-deletes its questions and embeddings (FK cascade); paper pools hold their own copies with new ids, so sent papers are unaffected.
 - A draft in `generating` for more than 15 minutes is reported as `failed` ("Generation timed out") on read.
+
+## 0003_round_duration
+`rounds."Duration" double precision` (nullable): minutes the round's test runs, saved from the drive wizard. The name is quoted with a capital D because it was first created by hand in Supabase; always write it as `"Duration"` in SQL. `rounds.threshold` stays the cut-off %.

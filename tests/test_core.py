@@ -60,3 +60,11 @@ def test_database_url_forced_to_asyncpg():
         assert Settings(database_url=raw).database_url == "postgresql+asyncpg://u:p@h:5432/d"
     already = "postgresql+asyncpg://u:p@h:5432/d"
     assert Settings(database_url=already).database_url == already
+
+
+def test_openapi_marks_file_fields_binary():
+    from app.main import app
+
+    schemas = app.openapi()["components"]["schemas"]
+    sheet = next(v for k, v in schemas.items() if "import_candidates" in k)["properties"]["sheet"]
+    assert sheet["format"] == "binary"

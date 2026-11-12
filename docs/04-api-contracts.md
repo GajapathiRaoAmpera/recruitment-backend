@@ -8,8 +8,8 @@ Auth column: **S** = student attempt token, **HR** = HR or Super Admin (HR limit
 | Method | Path | Auth | Body → Response |
 |---|---|---|---|
 | GET  | `/me` | HR | → `{id, email, full_name, role}` |
-| POST | `/entry/verify` | — | `{invite_token, student_id, dob}` → `{entry_token, candidate:{full_name}, round:{type, test_id}}` · 401 `ENTRY_MISMATCH` (logged) |
-| POST | `/entry/steps` | entry | `{step:"location"\|"terms"\|"fullscreen", ok, meta}` → 204 |
+| POST | `/entry/verify` | — | `{student_id, dob}` → `{entry_token, candidate:{full_name}, rounds:[{round_id, type, test_id}]}` · 401 `ENTRY_MISMATCH` (logged) |
+| POST | `/entry/steps` | entry | `{round_id, step:"location"\|"terms"\|"fullscreen", ok, meta}` → 204 |
 | POST | `/entry/start` | entry | → `{attempt_token, attempt_id}` · 409 if location/terms missing |
 
 ## Drives & pipeline
