@@ -7,6 +7,7 @@ from app.candidates.router import router as candidates_router
 from app.core.errors import install_error_handlers
 from app.drives.router import router as drives_router
 from app.execution.coding_questions.router import router as coding_questions_router
+from app.execution.results.router import router as results_router
 from app.execution.router import router as execution_router
 from app.execution.test_config.router import router as test_config_router
 from app.papers.router import router as papers_router
@@ -36,6 +37,7 @@ api.include_router(qbank_router)
 api.include_router(execution_router)
 api.include_router(coding_questions_router)
 api.include_router(test_config_router)
+api.include_router(results_router)
 app.include_router(api)
 
 
