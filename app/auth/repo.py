@@ -42,6 +42,8 @@ async def find_by_student_id(session: AsyncSession, student_id: str):
             "join rounds r on r.id = rc.round_id and r.status = 'active' "
             "left join tests t on t.round_id = r.id "
             "where lower(c.student_id) = lower(:sid) "
+            "and not exists (select 1 from attempts at join tests tt on tt.id = at.test_id "
+            "where tt.round_id = r.id and at.candidate_id = c.id and at.status = 'submitted') "
             "order by c.created_at desc, r.position"
         ),
         {"sid": student_id.strip()},
@@ -65,8 +67,8 @@ async def log_step(
 ) -> None:
     await session.execute(
         text(
-            "insert into verification_logs (candidate_id, round_id, step, ok, meta) "
-            "values (:cid, :rid, :step, :ok, cast(:meta as jsonb))"
+            "insert into verification_logs (candidate_id, round_id, step, ok, meta, created_at) "
+            "values (:cid, :rid, :step, :ok, cast(:meta as jsonb), clock_timestamp())"
         ),
         {"cid": candidate_id, "rid": round_id, "step": step, "ok": ok, "meta": json.dumps(meta)},
     )
