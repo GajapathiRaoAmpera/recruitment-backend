@@ -1,0 +1,89 @@
+# Self-hosted Judge0 for code runs (FR-15). Start with `make judge0-up` from the repo root.
+#
+# Judge0 is only reachable from this machine (127.0.0.1:2358) and every request needs the
+# X-Auth-Token header. Set JUDGE0_AUTH_TOKEN in .env (copy .env.example).
+name: judge0
+
+x-judge0: &judge0
+  # Our patched Judge0 1.13.1 (isolate 2.x, works on cgroup v2). Built from ./Dockerfile when
+  # the image is not already on this machine; set JUDGE0_IMAGE to use a published copy.
+  image: ${JUDGE0_IMAGE:-recruitment-judge0:1.13.1-isolate2}
+  build: .
+  restart: unless-stopped
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  environment: &judge0-env
+    AUTHN_HEADER: X-Auth-Token
+    AUTHN_TOKEN: ${JUDGE0_AUTH_TOKEN:?Set JUDGE0_AUTH_TOKEN in .env (see .env.example)}
+    POSTGRES_HOST: db
+    POSTGRES_DB: judge0
+    POSTGRES_USER: judge0
+    POSTGRES_PASSWORD: ${JUDGE0_DB_PASSWORD:-judge0-internal}
+    REDIS_HOST: redis
+    REDIS_PASSWORD: ${JUDGE0_REDIS_PASSWORD:-judge0-internal}
+    # isolate 2.x measures time and memory with cgroups only, so the per-process modes
+    # (which run without cgroups) are switched off.
+    ALLOW_ENABLE_PER_PROCESS_AND_THREAD_TIME_LIMIT: "false"
+    ALLOW_ENABLE_PER_PROCESS_AND_THREAD_MEMORY_LIMIT: "false"
+    # No `?wait=true`: that would run code inside the web server container, which is not
+    # privileged. Every run goes through the workers; clients poll for the result.
+    ENABLE_WAIT_RESULT: "false"
+    # Upper bounds Judge0 will accept per run; the backend always sends its own, lower limits.
+    MAX_CPU_TIME_LIMIT: "15"
+    MAX_WALL_TIME_LIMIT: "20"
+    MAX_MEMORY_LIMIT: "512000"
+
+services:
+  server:
+    <<: *judge0
+    ports:
+      - "127.0.0.1:2358:2358"
+    healthcheck:
+      test: ["CMD-SHELL", 'curl -fsS -H "X-Auth-Token: $$AUTHN_TOKEN" http://localhost:2358/system_info >/dev/null']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  workers:
+    <<: *judge0
+    command: ["/api/scripts/workers"]
+    # isolate needs to create namespaces and cgroups.
+    privileged: true
+    environment:
+      <<: *judge0-env
+      # Parallel runs on this machine
+      COUNT: ${JUDGE0_WORKERS:-4}
+
+  db:
+    image: postgres:16.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: judge0
+      POSTGRES_USER: judge0
+      POSTGRES_PASSWORD: ${JUDGE0_DB_PASSWORD:-judge0-internal}
+    volumes:
+      - judge0-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U judge0 -d judge0"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["sh", "-c", 'exec redis-server --appendonly no --requirepass "$$REDIS_PASSWORD"']
+    environment:
+      REDIS_PASSWORD: ${JUDGE0_REDIS_PASSWORD:-judge0-internal}
+    healthcheck:
+      test: ["CMD-SHELL", 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  judge0-db:

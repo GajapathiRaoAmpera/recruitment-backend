@@ -1,0 +1,16 @@
+# Isolate 2.x configuration for the Judge0 image.
+
+# All sandboxes are created under this directory.
+box_root = /var/local/lib/isolate
+
+# Lock files, one per sandbox.
+lock_root = /run/isolate/locks
+
+# cgroup v2: per-sandbox cgroups are created directly under the container's own cgroup.
+# entrypoint.sh prepares it (moves processes to a child, enables the memory controller).
+cg_root = /sys/fs/cgroup
+
+# Block of UIDs and GIDs reserved for sandboxes. Judge0 uses submission_id as the box id.
+first_uid = 60000
+first_gid = 60000
+num_boxes = 2147483647
