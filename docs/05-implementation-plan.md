@@ -9,7 +9,7 @@ Suggested split once decided: **A** Auth+Admin, **B** Intake+Parser, **C** Round
 |---|---|---|---|---|
 | 0.1 | `uv init`, FastAPI skeleton, `/healthz`, settings from env, error handler, pytest + ruff | backend | — | |
 | 0.2 | Alembic + migration `0001_init` from `03-database-schema.md` | backend | — | |
-| 0.3 | Vite React JS app, Tailwind with Stitch tokens, router with role guards, API client | frontend | — | |
+| 0.3 | Next.js + TypeScript app, SCSS with Stitch tokens, role-guarded layouts, API client | frontend | — | |
 | 0.4 | `.env.example` both repos, README setup, CI (lint + test) on push | both | — | |
 
 ## Phase 1 — Auth & roles
@@ -34,6 +34,8 @@ Suggested split once decided: **A** Auth+Admin, **B** Intake+Parser, **C** Round
 | 3.4 | Scoring, ranking, re-score on key change | backend | FR-10,11 AC-4 | |
 | 3.5 | Aptitude test screen with local draft + server sync | frontend | FR-17 AC-6 | |
 | 3.6 | `/rounds/{id}/advance` + EmailSender + email templates | backend | FR-12,26 | |
+| 3.7 | Round 1 paper builder (`/papers/*`: LLM-generated sample paper, HR edit, accept, send; plan of record `07-round1-paper-builder-implementation-plan.md`) | both | FR-9,10 | |
+| 3.8 | Code generators for Aptitude/Reasoning; Technical (IT and Non-IT) written for the drive's role by an NVIDIA model, checked by HR in review. The PDF question banks + RAG of `08-question-bank-rag-plan.md` were built, then removed on 2026-11-13 (tables kept, unused) | both | FR-9,10 | |
 
 ## Phase 4 — Coding round
 | 4.1 | Judge0 self-host (docker compose) + client with timeouts | backend | FR-15 | |

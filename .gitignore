@@ -4,4 +4,9 @@
 .claude/settings.local.json
 .claude/skills/postgres/connections.json
 __pycache__/
-*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# local resume PDFs
+storage/
