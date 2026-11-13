@@ -1,6 +1,6 @@
 # 09 — Round 3 (AI interview) design
 
-Status: **draft, awaiting approval** (2026-11-13). Covers FR-19, FR-20, AC-8 and plan tasks 5.1–5.4, plus live camera monitoring (new scope).
+Status: **built** (2026-11-13), not yet run against a real Gemini key. The build differs from this draft in two places: students enter through a standalone `/interview` page (Student ID + DOB → interview token) instead of the exam entry flow, and the interviewer can open a typed answer box (`show_answer_box` tool) for code and written answers. `docs/04` has the final routes. Covers FR-19, FR-20, AC-8 and plan tasks 5.1–5.4, plus live camera monitoring (new scope).
 
 ## Intent
 A shortlisted student talks to an AI interviewer by voice for 35–45 minutes (the round's duration, set by HR). The conversation is saved as text, scored against the rubric with a sentiment reading, and HR reads the transcript and scores, adds notes, and can watch the student's camera while the interview is live.

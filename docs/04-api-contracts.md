@@ -61,13 +61,22 @@ Auth column: **S** = student attempt token, **HR** = HR or Super Admin (HR limit
 All S endpoints return 409 `ATTEMPT_LOCKED` / `ATTEMPT_EXPIRED` when not `in_progress`.
 
 ## AI interview
+Standalone entry: the student opens `/interview`, signs in with Student ID + DOB and gets an **interview token** (I) for that one interview. Audio goes browser ↔ Gemini Live directly with a one-use ephemeral token; the Gemini key and both prompts never leave the server (docs/09).
+
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| POST | `/interview/session` | S | → `{ephemeral_token, model, expires_at}` (prompt from `ai_prompts`) |
-| POST | `/interview/transcript` | S | `{turns:[{role, text, ts}], ended}` (append) |
-| POST | `/interviews/{id}/evaluate` | HR | (re)run AI scoring → `ai_scores` |
-| PATCH | `/interviews/{id}` | HR | `{hr_notes}` |
-| GET  | `/rounds/{id}/interviews` | HR | list with scores |
+| GET | `/interview/ping` | public | 204, no DB. Timed by the page for the network check. |
+| POST | `/interview/start` | public | `{student_id, dob, round_id?}` → `{interview_token, interview_id, status, candidate_name, role_title, company, duration_min, seconds_left}`. Same 401 for unknown ID and wrong DOB; 5 misses lock 15 min. |
+| POST | `/interview/session` | I | Starts the clock on first call; mints a token (`uses: 1`, model + config incl. system instruction locked). → `{ephemeral_token, model, expires_at, deadline_at, server_now, seconds_left, resumed, role_title, candidate_name, client_config, protocol:{system_tag, typed_prefix, closing_phrase}}`. Call again to rejoin after a reload or when a reconnect needs a fresh token. 409 when completed; 503 `AI_NOT_CONFIGURED` without `GEMINI_API_KEY`. |
+| POST | `/interview/transcript` | I | `{turns:[{role:"ai"\|"candidate", kind:"spoken"\|"typed"\|"question", text, language?, ts}], ended}`. Appends. `ended: true` completes the interview and queues scoring. |
+| POST | `/interview/frame` | I | Body: one `image/jpeg`, max 100 KB (413 `FRAME_TOO_LARGE`). Held in memory only, never stored. |
+| GET | `/interviews?round_id=&drive_id=` | HR | Rows: candidate, status, started/ended, turns, `scoring` (pending\|done\|error\|null), `average`, `has_notes`. Own drives only. |
+| GET | `/interviews/{id}` | HR | Row + `transcript`, `ai_scores`, `hr_notes`, `skills`, `deadline_at`. |
+| GET | `/interviews/{id}/frame` | HR | Latest camera still as `image/jpeg` if under 10 s old, else 404 `NO_FRAME`. `Cache-Control: no-store`. |
+| POST | `/interviews/{id}/evaluate` | HR | 202 → `{scoring}`; re-runs scoring in the background. 409 if no transcript. Audited. |
+| PATCH | `/interviews/{id}` | HR | `{hr_notes}` → detail. Audited. |
+
+`ai_scores` (validated by `AiScores` before storing): `{communication, technical_depth, problem_solving, culture: 1-5 integers, sentiment:{overall: positive|neutral|negative, confidence: low|medium|high, note ≤300}, summary ≤1200, model, evaluated_at}`; `{pending: true}` while scoring; `{error: "<code>"}` when it failed twice. Advice for HR, not a decision.
 
 ## Super Admin
 | Method | Path | Auth | Notes |
@@ -143,6 +152,6 @@ Generation failures are not HTTP errors: the background job sets `status:"failed
 | student_aptitude_test, student_coding_test | `/attempt*` |
 | candidate_submission_result, offer_results_student_portal, candidate_dashboard | `/me/status` |
 | candidate_evaluation_coding_result, proctoring_report | `/tests/{id}/attempts/{aid}`, `/tests/{id}/alerts` |
-| interviewer_console, candidate_round_3_interview_details | `/rounds/{id}/interviews`, `/interviews/{id}` |
+| interviewer_console, candidate_round_3_interview_details | `/interviews`, `/interviews/{id}`, `/interviews/{id}/frame` |
 | final_ranking_offers | `/tests/{id}/dashboard`, `PATCH /rounds/{id}/candidates/{cid}` |
 | super_admin_dashboard, users_roles, ai_settings, audit_logs, partner_colleges | `/admin/*` (partner colleges = distinct `drives.campus`) |
