@@ -11,6 +11,7 @@ from app.core.audit import audit
 from app.core.errors import AppError
 from app.execution.test_config import repo
 from app.execution.test_config.schemas import (
+    RoundTestOut,
     TestConfigIn,
     TestConfigOut,
     TestQuestionOut,
@@ -26,15 +27,34 @@ def _owner(user: StaffUser) -> UUID | None:
     return None if user.role == "super_admin" else user.id
 
 
-async def configure(
-    session: AsyncSession, user: StaffUser, round_id: UUID, body: TestConfigIn
-) -> TestConfigOut:
-    """Create the round's test if it doesn't exist yet, then apply the fields that were sent."""
+async def _test_round(session: AsyncSession, user: StaffUser, round_id: UUID):
     rnd = await repo.get_round(session, round_id, _owner(user))
     if rnd is None:  # also hides other HR's rounds
         raise AppError(404, "ROUND_NOT_FOUND", "Round not found")
     if rnd["type"] not in TEST_ROUND_TYPES:
         raise AppError(409, "ROUND_HAS_NO_TEST", f"A {rnd['type']} round has no test to set up")
+    return rnd
+
+
+async def get_config(session: AsyncSession, user: StaffUser, round_id: UUID) -> RoundTestOut:
+    """Read only: never creates the test row (the PUT does), so no audit and no commit."""
+    await _test_round(session, user, round_id)
+    row = await repo.find_test_of_round(session, round_id)
+    if row is None:
+        raise AppError(404, "TEST_NOT_FOUND", "This round's test isn't set up yet")
+    questions = await repo.current_questions(session, row["id"])
+    return RoundTestOut(
+        **dict(row),
+        question_ids=[q["question_id"] for q in questions],
+        locked=await repo.has_attempts(session, row["id"]),  # same rule the PUT uses
+    )
+
+
+async def configure(
+    session: AsyncSession, user: StaffUser, round_id: UUID, body: TestConfigIn
+) -> TestConfigOut:
+    """Create the round's test if it doesn't exist yet, then apply the fields that were sent."""
+    rnd = await _test_round(session, user, round_id)
     changes = body.model_dump(exclude_unset=True)
     default_seconds = round((rnd["duration_min"] or DEFAULT_MINUTES) * 60)
     await repo.ensure_test(session, round_id, default_seconds)

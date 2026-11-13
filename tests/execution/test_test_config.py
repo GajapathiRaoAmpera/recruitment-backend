@@ -84,6 +84,9 @@ def db(monkeypatch):
     async def get_test_of_round(_, rid):
         return next(t for t in state["tests"].values() if t["round_id"] == rid)
 
+    async def find_test_of_round(_, rid):
+        return next((t for t in state["tests"].values() if t["round_id"] == rid), None)
+
     async def lock_test(_, tid, owner_id):
         t = state["tests"].get(tid)
         return t if t and seen(owner_id, state["rounds"][t["round_id"]]["owner"]) else None
@@ -134,6 +137,7 @@ def db(monkeypatch):
         ensure_test=ensure_test,
         update_test=update_test,
         get_test_of_round=get_test_of_round,
+        find_test_of_round=find_test_of_round,
         lock_test=lock_test,
         has_attempts=has_attempts,
         current_questions=current_questions,
@@ -395,3 +399,70 @@ def test_the_response_has_no_test_cases_or_question_text(db):
     q = db["question"]()
     out = put_questions(HR, tid, [q]).json()
     assert set(out["questions"][0]) == {"question_id", "position", "difficulty", "marks"}
+
+
+# --- GET /rounds/{id}/test -------------------------------------------------------------------
+
+
+def test_read_needs_a_staff_login(db):
+    assert TestClient(app).get(f"/api/v1/rounds/{uuid.uuid4()}/test").status_code == 401
+
+
+def test_read_returns_the_config_with_questions_in_order(db):
+    tid = make_test(db)
+    rid = db["tests"][tid]["round_id"]
+    as_user(HR).put(f"/api/v1/rounds/{rid}/test", json={"difficulty": "medium"})
+    q1, q2, q3 = db["question"](), db["question"](difficulty="advanced"), db["question"]()
+    assert put_questions(HR, tid, [q2, q3, q1]).status_code == 200
+    commits, audits = db["session"].commits, len(db["audits"])
+    r = as_user(HR).get(f"/api/v1/rounds/{rid}/test")
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["id"] == str(tid) and out["round_id"] == str(rid)
+    assert out["question_ids"] == [str(q2), str(q3), str(q1)]
+    assert out["difficulty"] == "medium" and out["duration_sec"] == 1800
+    assert out["question_count"] == 3 and out["locked"] is False
+    assert out["settings"]["levels"] == {"easy": 2, "medium": 0, "advanced": 1}
+    assert set(out) == {
+        "id", "round_id", "difficulty", "duration_sec", "question_count", "settings",
+        "opens_at", "closes_at", "question_ids", "locked",
+    }  # fmt: skip
+    assert db["session"].commits == commits  # a read: no commit
+    assert len(db["audits"]) == audits  # a read: no audit row
+
+
+def test_read_of_a_round_with_no_test_is_404_and_creates_nothing(db):
+    rid = db["add_round"]()
+    r = as_user(HR).get(f"/api/v1/rounds/{rid}/test")
+    assert r.status_code == 404 and r.json()["error"]["code"] == "TEST_NOT_FOUND"
+    assert db["tests"] == {} and db["audits"] == [] and db["session"].commits == 0
+
+
+def test_read_hides_other_hrs_round_and_unknown_round(db):
+    tid = make_test(db)
+    rid = db["tests"][tid]["round_id"]
+    for user, round_id in ((OTHER_HR, rid), (HR, uuid.uuid4())):
+        r = as_user(user).get(f"/api/v1/rounds/{round_id}/test")
+        assert r.status_code == 404 and r.json()["error"]["code"] == "ROUND_NOT_FOUND"
+
+
+def test_super_admin_can_read_any_round(db):
+    tid = make_test(db)
+    rid = db["tests"][tid]["round_id"]
+    r = as_user(ADMIN).get(f"/api/v1/rounds/{rid}/test")
+    assert r.status_code == 200 and r.json()["id"] == str(tid)
+
+
+@pytest.mark.parametrize("kind", ["shortlist", "ai_interview", "final"])
+def test_read_of_a_round_without_a_test_type_is_409(db, kind):
+    rid = db["add_round"](kind=kind)
+    r = as_user(HR).get(f"/api/v1/rounds/{rid}/test")
+    assert r.status_code == 409 and r.json()["error"]["code"] == "ROUND_HAS_NO_TEST"
+
+
+def test_read_shows_locked_once_a_student_started(db):
+    tid = make_test(db)
+    rid = db["tests"][tid]["round_id"]
+    assert as_user(HR).get(f"/api/v1/rounds/{rid}/test").json()["locked"] is False
+    db["attempts"].add(tid)
+    assert as_user(HR).get(f"/api/v1/rounds/{rid}/test").json()["locked"] is True

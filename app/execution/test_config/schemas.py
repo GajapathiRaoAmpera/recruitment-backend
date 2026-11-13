@@ -43,6 +43,14 @@ class TestConfigOut(BaseModel):
     closes_at: datetime | None
 
 
+class RoundTestOut(TestConfigOut):
+    """GET /rounds/{id}/test: the PUT's shape plus the question list and the lock."""
+
+    __test__ = False
+    question_ids: list[UUID]  # in the order students see
+    locked: bool  # a student has started, so the questions can't change
+
+
 class TestQuestionsIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

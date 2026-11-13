@@ -51,6 +51,14 @@ async def get_test_of_round(session: AsyncSession, round_id: UUID) -> RowMapping
     return rows.mappings().one()
 
 
+async def find_test_of_round(session: AsyncSession, round_id: UUID) -> RowMapping | None:
+    """Read only: None when the round has no test row yet (never creates one)."""
+    rows = await session.execute(
+        text(f"select {_TEST_COLS} from tests where round_id = :r"), {"r": round_id}
+    )
+    return rows.mappings().one_or_none()
+
+
 async def lock_test(
     session: AsyncSession, test_id: UUID, owner_id: UUID | None
 ) -> RowMapping | None:
