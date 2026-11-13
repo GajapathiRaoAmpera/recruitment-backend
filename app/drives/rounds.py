@@ -11,17 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 class RoundIn(BaseModel):
     type: Literal["shortlist", "aptitude", "coding", "ai_interview", "technical", "final"]
     mode: Literal["ai", "manual", "auto"] = "auto"
-    threshold: float | None = Field(None, ge=0, le=100)  # cut-off %
-    duration_min: float | None = Field(
-        None, gt=0, le=600
-    )  # minutes the test runs; column "Duration"
+    threshold: float | None = Field(default=None, ge=0, le=100)  # cut-off %
+    # minutes the test runs; column "Duration"
+    duration_min: float | None = Field(default=None, gt=0, le=600)
 
 
 DEFAULT_ROUNDS = [
     RoundIn(type="shortlist"),
     RoundIn(type="aptitude", threshold=60, duration_min=30),
     RoundIn(type="coding", threshold=50, duration_min=60),
-    RoundIn(type="ai_interview", mode="ai", duration_min=20),
+    RoundIn(type="ai_interview", mode="ai", duration_min=40),
     RoundIn(type="final", mode="manual"),
 ]
 

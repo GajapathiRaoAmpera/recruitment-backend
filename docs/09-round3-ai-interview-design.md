@@ -1,6 +1,6 @@
 # 09 — Round 3 (AI interview) design
 
-Status: **draft, awaiting approval** (2026-11-13). Covers FR-19, FR-20, AC-8 and plan tasks 5.1–5.4, plus live camera monitoring (new scope).
+Status: **built** (2026-11-13), not yet run against a real Gemini key. The build differs from this draft in two places: students enter through a standalone `/interview` page (Student ID + DOB → interview token) instead of the exam entry flow, and the interviewer can open a typed answer box (`show_answer_box` tool) for code and written answers. `docs/04` has the final routes. Covers FR-19, FR-20, AC-8 and plan tasks 5.1–5.4, plus live camera monitoring (new scope).
 
 ## Intent
 A shortlisted student talks to an AI interviewer by voice for 35–45 minutes (the round's duration, set by HR). The conversation is saved as text, scored against the rubric with a sentiment reading, and HR reads the transcript and scores, adds notes, and can watch the student's camera while the interview is live.
@@ -33,7 +33,7 @@ A shortlisted student talks to an AI interviewer by voice for 35–45 minutes (t
 - Interviews run 35–45 minutes (user decision). Gemini Live does not do that by default: an audio-only session ends at **15 minutes** and each connection at about **10 minutes**. Both are lifted with two config switches:
   - `contextWindowCompression: { slidingWindow: {} }` removes the 15-minute cap. The model then forgets the oldest part of the conversation as it goes.
   - `sessionResumption: { handle }`: the server sends `sessionResumptionUpdate.newHandle`; before a connection ends it sends `goAway.timeLeft`; the browser reconnects with the latest handle. Handles last 2 hours. The same token works for these reconnects even with `uses: 1`.
-- Ephemeral tokens: `POST https://generativelanguage.googleapis.com/v1beta/auth_tokens`, header `x-goog-api-key`, body `uses`, `expireTime`, `newSessionExpireTime`, `liveConnectConstraints {model, config}`. v1beta only, Live API only.
+- Ephemeral tokens: `POST https://generativelanguage.googleapis.com/v1beta/auth_tokens`, header `x-goog-api-key`, body `uses`, `expireTime`, `newSessionExpireTime`, `bidiGenerateContentSetup {model, generationConfig{responseModalities, speechConfig}, systemInstruction, ...}` (the docs page shows the SDK name `liveConnectConstraints`, which REST rejects; checked with a real call 2026-11-14). v1beta only, Live API only.
 - Transcription is switched on in the session config (`inputAudioTranscription`, `outputAudioTranscription`) and arrives as `inputTranscription.text` / `outputTranscription.text` in server messages.
 - Audio in: 16-bit PCM, 16 kHz, `audio/pcm;rate=16000`. Audio out: 16-bit PCM, 24 kHz.
 - Model id used in Google's examples: `gemini-3.8-live` (config value, not hard-coded).

@@ -162,8 +162,8 @@ create table interviews (
   round_id      uuid not null references rounds(id) on delete cascade,
   candidate_id  uuid not null references candidates(id) on delete cascade,
   status        text not null default 'scheduled',     -- scheduled|live|completed|failed
-  transcript    jsonb,                                 -- [{role, text, ts}]
-  ai_scores     jsonb,                                 -- rubric (01-requirements open decisions)
+  transcript    jsonb,                                 -- [{role: ai|candidate, kind: spoken|typed|question, text, language, ts}]
+  ai_scores     jsonb,                                 -- {communication, technical_depth, problem_solving, culture: 1-5, sentiment{overall, confidence, note}, summary, model, evaluated_at} | {pending: true} | {error}
   hr_notes      text,
   started_at    timestamptz,
   ended_at      timestamptz,

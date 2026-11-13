@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # alternative: nvidia/nemotron-3.5-super-vl-120b-a12b
     nvidia_generator_model: str = "nvidia/nemotron-3-ultra-550b-a55b"
     nvidia_rpm: int = 30  # requests per minute sent to NVIDIA (the free tier allows about 40)
+    # Round 3 AI interview (Gemini Live). The key is server only: the browser gets a one-use
+    # ephemeral token minted with it. Missing => AI_NOT_CONFIGURED.
+    gemini_api_key: str | None = None
+    gemini_live_model: str = "gemini-3.8-live"
+    gemini_live_voice: str = "Kore"  # prebuilt voice name; blank = the model's default
 
     @field_validator("database_url")
     @classmethod
@@ -44,10 +49,10 @@ class Settings(BaseSettings):
             self.supabase_secret_key.encode(), b"student-entry-token", "sha256"
         ).hexdigest()
 
-    @field_validator("nvidia_api_key")
+    @field_validator("nvidia_api_key", "gemini_api_key")
     @classmethod
     def _blank_is_missing(cls, v: str | None) -> str | None:
-        # `NVIDIA_API_KEY=` in .env means "not configured", not an empty key
+        # `NVIDIA_API_KEY=` (or GEMINI_API_KEY=) in .env means "not configured", not an empty key
         return v.strip() or None if v is not None else None
 
 
