@@ -1,7 +1,9 @@
 """What each student scored on the coding questions of a test. Read-only, so no audit rows.
 
-Score for a question = marks x passed / total (HR sets a higher `marks` on harder questions,
-which is how level weighs in). An explicit `answers.marks`, if someone stored one, wins."""
+Score for a question = marks x passed / total, rounded to 2 places (HR sets a higher `marks` on
+harder questions; no other level weighting). submit-code stores that value in `answers.marks`,
+which final submit sums into `attempts.marks`; the stored value wins here, so this page and the
+attempt total agree. Rows saved before marks were stored fall back to the same formula."""
 
 from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID

@@ -24,7 +24,7 @@ class ResultAnswer(BaseModel):
     language: str | None
     passed: int | None
     total: int | None
-    marks_earned: Decimal  # marks x passed / total, unless an explicit mark was stored
+    marks_earned: Decimal  # answers.marks (= marks x passed / total, set by submit-code)
 
 
 class CandidateResult(BaseModel):

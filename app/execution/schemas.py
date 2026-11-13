@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -7,6 +8,12 @@ from app.execution.languages import LANGUAGES
 
 MAX_CODE_CHARS = 64_000
 MAX_OUTPUT_CHARS = 4_000  # a sample's stdout can be as large as the program prints
+
+
+def known_language(v: str) -> str:
+    if v not in LANGUAGES:
+        raise ValueError(f"language must be one of: {', '.join(LANGUAGES)}")
+    return v
 
 
 class CodeRequest(BaseModel):
@@ -19,9 +26,34 @@ class CodeRequest(BaseModel):
     @field_validator("language")
     @classmethod
     def _known_language(cls, v: str) -> str:
-        if v not in LANGUAGES:
-            raise ValueError(f"language must be one of: {', '.join(LANGUAGES)}")
-        return v
+        return known_language(v)
+
+
+class DraftIn(BaseModel):
+    """Editor autosave for one coding question. May be empty (the student cleared the editor)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(max_length=MAX_CODE_CHARS)
+    language: str
+
+    @field_validator("language")
+    @classmethod
+    def _known_language(cls, v: str) -> str:
+        return known_language(v)
+
+
+class DraftOut(BaseModel):
+    code: str
+    language: str | None
+    saved_at: datetime
+
+
+class DraftsOut(BaseModel):
+    """Only drafts newer than the question's last submission. Keyed by question id; a question
+    with no newer draft is absent, so the client falls back to GET /attempt's saved_answers."""
+
+    drafts: dict[str, DraftOut]
 
 
 class CaseResult(BaseModel):

@@ -1,4 +1,8 @@
-"""First real end-to-end run: HR sets up a coding test, a student sits it, HR reads the result.
+"""End to end: HR sets up a coding test, a student sits it, HR reads the result.
+
+Student path: entry/start -> GET /attempt (coding question, samples only) -> run -> submit-code
+(partial, then full marks) -> POST /attempt/submit -> attempts.marks includes the coding marks ->
+run / submit-code are refused with 409 ATTEMPT_LOCKED.
 
 INTEGRATION test against a real Postgres and a live Judge0, skipped by default. It never touches
 the database in .env: it needs `E2E_DATABASE_URL` pointing at a scratch database that has been
@@ -14,6 +18,7 @@ import asyncio
 import os
 import uuid
 from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 import pytest
@@ -53,6 +58,28 @@ def question_body(hidden_marker: str | None = None) -> dict:
         "marks": 10,
         "test_cases": cases,
     }
+
+
+async def answer_marks(sessions, attempt_id: str, qid: str) -> Decimal | None:
+    async with sessions() as s:
+        return (
+            await s.execute(
+                text("select marks from answers where attempt_id = :a and question_id = :q"),
+                {"a": uuid.UUID(attempt_id), "q": uuid.UUID(qid)},
+            )
+        ).scalar_one_or_none()
+
+
+async def put_draft(c: httpx.AsyncClient, me: dict, qid: str, code: str) -> httpx.Response:
+    return await c.put(
+        f"{API}/attempt/code-drafts/{qid}", json={"code": code, "language": "python"}, headers=me
+    )
+
+
+async def drafts(c: httpx.AsyncClient, me: dict) -> dict[str, str]:
+    r = await c.get(f"{API}/attempt/code-drafts", headers=me)
+    assert r.status_code == 200, r.text
+    return {q: d["code"] for q, d in r.json()["drafts"].items()}
 
 
 async def _story(engine) -> None:
@@ -136,7 +163,7 @@ async def _story(engine) -> None:
         assert v.status_code == 200, v.text
         entry = {"Authorization": f"Bearer {v.json()['entry_token']}"}
         assert v.json()["rounds"][0]["test_id"] == test_id  # HR's test row is the one used
-        for step in ("location", "terms"):
+        for step in ("location", "terms", "fullscreen"):
             s_ = await c.post(
                 f"{API}/entry/steps",
                 json={"round_id": round_id, "step": step, "ok": True},
@@ -150,6 +177,29 @@ async def _story(engine) -> None:
         assert (
             await c.post(f"{API}/entry/start", json={"round_id": round_id}, headers=entry)
         ).json()["attempt_id"] == attempt_id  # a reload gets the same attempt
+
+        # GET /attempt: the coding question with its 3 samples, never a hidden case
+        state = await c.get(f"{API}/attempt", headers=me)
+        assert state.status_code == 200, state.text
+        st_out = state.json()
+        assert st_out["status"] == "in_progress"
+        assert st_out["deadline_at"] and st_out["server_now"]
+        coding = [x for x in st_out["questions"] if x["kind"] == "coding"]
+        assert [x["id"] for x in coding] == [qid]
+        assert coding[0]["marks"] == 10
+        samples = [c_ for c_ in sum_cases() if c_.is_sample]
+        assert coding[0]["samples"] == [
+            {"input": c_.input, "expected": c_.expected} for c_ in samples
+        ]
+        assert "python" in {lang["key"] for lang in coding[0]["languages"]}
+        for hidden in (c_ for c_ in sum_cases() if not c_.is_sample):
+            assert hidden.input not in state.text  # inputs of hidden cases never reach a student
+        assert st_out["saved_answers"] == {}
+
+        # a code draft before any submit: recovered by GET /attempt/code-drafts only
+        assert (await put_draft(c, me, qid, "draft v1")).status_code == 204
+        assert await drafts(c, me) == {qid: "draft v1"}
+        assert (await c.get(f"{API}/attempt", headers=me)).json()["saved_answers"] == {}
 
         run = await c.post(
             f"{API}/attempt/run",
@@ -165,12 +215,27 @@ async def _story(engine) -> None:
             headers=me,
         )
         assert wrong.status_code == 200 and wrong.json()["passed"] < 18, wrong.text
+        partial = (Decimal(10) * wrong.json()["passed"] / 18).quantize(
+            Decimal("0.01"), ROUND_HALF_UP
+        )
+        assert await answer_marks(sessions, attempt_id, qid) == partial  # marks x passed / total
         right = await c.post(
             f"{API}/attempt/submit-code",
             json={"question_id": qid, "code": SOLUTIONS["python"], "language": "python"},
             headers=me,
         )
         assert right.json() == {"passed": 18, "total": 18}, right.text  # latest submit wins
+        assert await answer_marks(sessions, attempt_id, qid) == Decimal("10.00")
+        saved = (await c.get(f"{API}/attempt", headers=me)).json()["saved_answers"]
+        assert saved == {qid: {"code": SOLUTIONS["python"], "language": "python"}}
+        assert await drafts(c, me) == {}  # the submission is newer than draft v1
+
+        # a draft after the submit is newer, and leaves the submitted code and marks alone
+        assert (await put_draft(c, me, qid, "draft v2")).status_code == 204
+        assert await drafts(c, me) == {qid: "draft v2"}
+        saved = (await c.get(f"{API}/attempt", headers=me)).json()["saved_answers"]
+        assert saved == {qid: {"code": SOLUTIONS["python"], "language": "python"}}
+        assert await answer_marks(sessions, attempt_id, qid) == Decimal("10.00")
 
         # --- back to HR: results and the lock ------------------------------------------------
         res = await c.get(f"{API}/tests/{test_id}/results")
@@ -189,6 +254,32 @@ async def _story(engine) -> None:
         assert sub.status_code == 200, sub.text
         assert sub.json()["submissions"][0]["code"] == SOLUTIONS["python"]
         assert "expected" not in res.text and "expected" not in sub.text  # no case text, ever
+
+        # --- student's final submit: the attempt total includes the coding marks ----------
+        fin = await c.post(f"{API}/attempt/submit", headers=me)
+        assert fin.status_code == 200 and fin.json()["status"] == "submitted", fin.text
+        async with sessions() as s:
+            total = (
+                await s.execute(
+                    text("select marks from attempts where id = :a"), {"a": uuid.UUID(attempt_id)}
+                )
+            ).scalar_one()
+        assert total == Decimal("10.00")
+        after = (await c.get(f"{API}/tests/{test_id}/results")).json()["candidates"][0]
+        assert (after["status"], after["score"]) == ("submitted", "10.00")  # same as the total
+        for path in ("run", "submit-code"):
+            late = await c.post(
+                f"{API}/attempt/{path}",
+                json={"question_id": qid, "code": "print(0)\n", "language": "python"},
+                headers=me,
+            )
+            assert late.status_code == 409, late.text
+            assert late.json()["error"]["code"] == "ATTEMPT_LOCKED"
+        assert await answer_marks(sessions, attempt_id, qid) == Decimal("10.00")  # unchanged
+        late_draft = await put_draft(c, me, qid, "too late")
+        assert late_draft.status_code == 409, late_draft.text
+        assert late_draft.json()["error"]["code"] == "ATTEMPT_LOCKED"
+        assert await drafts(c, me) == {qid: "draft v2"}  # still readable after the submit
 
         locked = await c.put(f"{API}/tests/{test_id}/questions", json={"question_ids": []})
         assert locked.status_code == 409 and locked.json()["error"]["code"] == "TEST_IN_USE"

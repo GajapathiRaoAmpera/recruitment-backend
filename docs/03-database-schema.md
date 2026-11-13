@@ -148,12 +148,15 @@ create table answers (
   attempt_id    uuid not null references attempts(id) on delete cascade,
   question_id   uuid not null references questions(id),
   response      jsonb,                                 -- mcq choice
-  code          text,
+  code          text,                                  -- coding: last SUBMITTED code
   language      text,
   passed_cases  int,
   total_cases   int,
-  marks         numeric(5,2),
-  updated_at    timestamptz not null default now(),
+  marks         numeric(5,2),                          -- coding: set by submit-code
+  updated_at    timestamptz not null default now(),    -- coding: last submit time
+  draft_code     text,                                 -- 0006: coding draft (editor autosave)
+  draft_language text,
+  draft_saved_at timestamptz,
   unique (attempt_id, question_id)
 );
 
@@ -315,6 +318,10 @@ end $$;
 - `paper_issues` rows are never rewritten: sending again to the same candidate is a no-op.
 - Bank questions (`questions.source_id is not null`) are inserted `approved = false`; only approved questions of `is_active` + `status = 'ready'` sources are retrieved for papers. Deleting a source hard-deletes its questions and embeddings (FK cascade); paper pools hold their own copies with new ids, so sent papers are unaffected.
 - A draft in `generating` for more than 15 minutes is reported as `failed` ("Generation timed out") on read.
+- Coding answers: submit-code sets `code`, `language`, `passed_cases`, `total_cases`, `updated_at` and `marks = round(questions.marks * passed / total, 2)` together, only while the attempt is `in_progress` or `locked` (row-locked), so the final submit's `attempts.marks = sum(answers.marks)` includes coding. A code draft only sets `draft_*`; the draft is newer than the submission when `draft_saved_at >= updated_at`.
 
 ## 0003_round_duration
 `rounds."Duration" double precision` (nullable): minutes the round's test runs, saved from the drive wizard. The name is quoted with a capital D because it was first created by hand in Supabase; always write it as `"Duration"` in SQL. `rounds.threshold` stays the cut-off %.
+
+## 0006_answer_code_drafts
+`answers.draft_code text`, `answers.draft_language text`, `answers.draft_saved_at timestamptz` (all nullable): the coding editor's autosave (`PUT /attempt/code-drafts/{question_id}`). `answers.code` stays the last submitted code, which matches `passed_cases` and `marks`; saving a draft never changes those columns or `updated_at`.
