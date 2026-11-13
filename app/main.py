@@ -1,15 +1,19 @@
 from fastapi import APIRouter, FastAPI
 
+from app.admin.progress import router as admin_progress_router
 from app.admin.router import router as admin_router
 from app.attempts.router import router as attempts_router
+from app.attempts.state_router import router as attempt_state_router
 from app.auth.router import router as auth_router
 from app.candidates.router import router as candidates_router
 from app.core.errors import install_error_handlers
+from app.drives.progress import router as progress_router
 from app.drives.router import router as drives_router
 from app.execution.coding_questions.router import router as coding_questions_router
 from app.execution.results.router import router as results_router
 from app.execution.router import router as execution_router
 from app.execution.test_config.router import router as test_config_router
+from app.integrity.router import router as integrity_router
 from app.papers.router import router as papers_router
 from app.qbank.limits import QbankBodyLimit
 from app.qbank.router import router as qbank_router
@@ -29,15 +33,19 @@ async def healthz() -> dict:
 
 api.include_router(auth_router)
 api.include_router(attempts_router)
+api.include_router(attempt_state_router)
 api.include_router(admin_router)
+api.include_router(admin_progress_router)
 api.include_router(candidates_router)
 api.include_router(drives_router)
+api.include_router(progress_router)
 api.include_router(papers_router)
 api.include_router(qbank_router)
 api.include_router(execution_router)
 api.include_router(coding_questions_router)
 api.include_router(test_config_router)
 api.include_router(results_router)
+api.include_router(integrity_router)
 app.include_router(api)
 
 

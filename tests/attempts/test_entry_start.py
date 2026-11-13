@@ -47,7 +47,7 @@ def bearer(token):
 @pytest.fixture(autouse=True)
 def fakes(monkeypatch):
     CALLS.clear()
-    CALLS.update(missing=[], existing=None, invited=True, open=True)
+    CALLS.update(missing=[], existing=None, invited=True, open=True, has_questions=True, paper=None)
 
     async def invite(_, c, r):
         return {"candidate_id": c} if CALLS["invited"] and (c, r) == (CID, RID) else None
@@ -74,6 +74,19 @@ def fakes(monkeypatch):
     monkeypatch.setattr(repo, "find_attempt", find)
     monkeypatch.setattr(repo, "missing_steps", missing)
     monkeypatch.setattr(repo, "ensure_test", ensure_test)
+
+    async def has_questions(*_):
+        return CALLS["has_questions"]
+
+    async def sent_paper(*_):
+        return CALLS["paper"]
+
+    async def link(_, attempt_id, rows):
+        CALLS["linked"] = (attempt_id, rows)
+
+    monkeypatch.setattr(repo, "has_questions", has_questions)
+    monkeypatch.setattr(repo, "sent_paper", sent_paper)
+    monkeypatch.setattr(repo, "link_questions", link)
     monkeypatch.setattr(repo, "start_attempt", start_attempt)
     app.dependency_overrides[get_session] = lambda: FakeSession()
     yield
@@ -142,10 +155,10 @@ def test_invited_but_round_not_open_is_409_with_a_clear_message():
 
 
 def test_location_and_terms_must_be_logged_ok():
-    CALLS["missing"] = ["location", "terms"]
+    CALLS["missing"] = ["location", "terms", "fullscreen"]
     r = start()
     assert r.status_code == 409 and r.json()["error"]["code"] == "STEPS_MISSING"
-    assert r.json()["error"]["details"]["missing"] == ["location", "terms"]
+    assert r.json()["error"]["details"]["missing"] == ["location", "terms", "fullscreen"]
     assert "started" not in CALLS and "commit" not in CALLS  # nothing was created
 
 
@@ -245,3 +258,74 @@ async def test_start_attempt_only_fills_in_a_never_started_row(monkeypatch):
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+# ---- the round's questions come from the paper HR accepted and sent --------------------------
+def _paper(n=3):
+    pool = [
+        {"id": str(uuid.uuid4()), "level": "easy", "section": "aptitude", "topic": "t",
+         "style": "aptitude", "text": f"Question {i}?", "options": ["a", "b", "c", "d"],
+         "answer": 1, "why": "w", "selected": i != 0}
+        for i in range(n)
+    ]  # fmt: skip
+    settings = {"track": "non_it", "counts": {"easy": 2, "medium": 0, "advanced": 0},
+                "mix": {"aptitude": 100, "reasoning": 0, "technical": 0}}  # fmt: skip
+    return {"drive_ref": "d1", "settings": settings, "pool": pool}
+
+
+def test_each_student_gets_their_own_questions_and_option_order():
+    CALLS.update(has_questions=False, paper=_paper(6))
+    CALLS["paper"]["settings"]["counts"]["easy"] = 5
+    assert start().status_code == 200
+    aid, rows = CALLS["linked"]
+    pool = {q["id"]: q for q in CALLS["paper"]["pool"]}
+    assert aid == AID and len(rows) == 5 and rows[0]["p"] == 0
+    assert all(r["q"] in pool and pool[r["q"]]["selected"] for r in rows)  # unselected are left out
+    for r in rows:  # option order is a permutation of the stored options
+        assert sorted(r["o"]) == [0, 1, 2, 3]
+    # another student: same seed rule but their own id -> different paper
+    CALLS.pop("linked")
+    other = ensure_for(uuid.uuid4())
+    assert [r["q"] for r in other] != [r["q"] for r in rows] or [r["o"] for r in other] != [
+        r["o"] for r in rows
+    ]
+
+
+def ensure_for(candidate_id):
+    import asyncio
+
+    from app.attempts import service
+
+    asyncio.run(service.ensure_questions(FakeSession(), AID, candidate_id, RID, "aptitude"))
+    return CALLS["linked"][1]
+
+
+def test_start_refused_when_no_paper_was_sent_to_the_student():
+    CALLS.update(has_questions=False, paper=None)
+    r = start()
+    assert r.status_code == 409 and r.json()["error"]["code"] == "PAPER_NOT_READY"
+    assert "linked" not in CALLS and "commit" not in CALLS  # nothing saved, attempt rolled back
+
+
+def test_sent_paper_decodes_only_the_json_columns(monkeypatch):
+    import asyncio
+
+    monkeypatch.undo()  # the autouse fixture replaced repo.sent_paper with a fake
+
+    class R:
+        def mappings(self):
+            return self
+
+        def one_or_none(self):
+            return {
+                "drive_ref": "8b17f471-187c-4111-b662-d0e788b91b50",
+                "settings": "{}",
+                "pool": "[]",
+            }
+
+    class S:
+        async def execute(self, *_):
+            return R()
+
+    got = asyncio.run(repo.sent_paper(S(), RID, CID))
+    assert got["drive_ref"].startswith("8b17f471") and got["settings"] == {} and got["pool"] == []

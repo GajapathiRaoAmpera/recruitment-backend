@@ -10,7 +10,8 @@ async def get_attempt(session: AsyncSession, attempt_id: UUID) -> RowMapping | N
     """The attempt's status plus whether its deadline has passed, by the database clock."""
     rows = await session.execute(
         text(
-            "select status, coalesce(deadline_at <= now(), false) as past_deadline "
+            "select status, coalesce(deadline_at <= now(), false) as past_deadline, "
+            "(status = 'submitted' and submitted_at >= deadline_at) as auto_submitted "
             "from attempts where id = :id"
         ),
         {"id": attempt_id},
