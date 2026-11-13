@@ -182,7 +182,7 @@ def db(monkeypatch):
         monkeypatch.setattr(repo, name, fn)
     monkeypatch.setattr(service, "audit", audit)
     monkeypatch.setattr(service, "open_session", lambda: bg_session)
-    monkeypatch.setattr(service, "ai_status", lambda: {"gemini": True, "groq": True})
+    monkeypatch.setattr(service, "ai_status", lambda: {"nvidia": True})
 
     async def fake_pool(settings, *, on_progress, overrides, **_):
         await on_progress(0, 4)
@@ -266,27 +266,23 @@ def test_create_starts_generation_and_audits(db, monkeypatch):
     assert db["session"].commits == 1
 
 
-def test_create_503_when_keys_missing(db, monkeypatch):
-    monkeypatch.setattr(service, "ai_status", lambda: {"gemini": True, "groq": False})
-    r = create(as_user(HR), settings=SETTINGS | {"track": "non_it"})  # Non-IT verifies with Groq
+@pytest.mark.parametrize("track", ["it", "non_it"])
+def test_create_503_when_key_missing(db, monkeypatch, track):
+    monkeypatch.setattr(service, "ai_status", lambda: {"nvidia": False})
+    r = create(as_user(HR), settings=SETTINGS | {"track": track})
     assert r.status_code == 503
     err = r.json()["error"]
-    assert err["code"] == "AI_PROVIDER_NOT_CONFIGURED" and err["details"] == {"providers": ["groq"]}
+    assert err["code"] == "AI_PROVIDER_NOT_CONFIGURED" and err["details"] == {
+        "providers": ["nvidia"]
+    }
+    assert "NVIDIA API key" in err["message"]
     assert db["drafts"] == {} and db["audits"] == []
 
 
-def test_it_create_needs_only_gemini(db, monkeypatch):
-    monkeypatch.setattr(service, "ai_status", lambda: {"gemini": True, "groq": False})
-    assert create(as_user(HR)).status_code == 201
-    monkeypatch.setattr(service, "ai_status", lambda: {"gemini": False, "groq": True})
-    r = create(as_user(HR))
-    assert r.status_code == 503 and r.json()["error"]["details"] == {"providers": ["gemini"]}
-
-
 def test_ai_status_reports_booleans_only(db, monkeypatch):
-    monkeypatch.setattr(service, "ai_status", lambda: {"gemini": True, "groq": False})
+    monkeypatch.setattr(service, "ai_status", lambda: {"nvidia": True})
     r = as_user(HR).get(f"{BASE}/ai-status")
-    assert r.status_code == 200 and r.json() == {"gemini": True, "groq": False}
+    assert r.status_code == 200 and r.json() == {"nvidia": True}
 
 
 def test_generation_success_sets_draft_with_checks(db):

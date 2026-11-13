@@ -1,8 +1,9 @@
-"""LLM layer of the Round 1 paper builder: Gemini generates, Groq verifies blind.
+"""LLM layer of the Round 1 paper builder: an NVIDIA model writes the Technical questions.
 
-Every model reply is schema-validated (GeneratedMcq) before use. The verifier only ever sees the
-question text and options, never the answer or the explanation, and a question is kept only when
-the verifier's independent answer agrees with the generator's.
+Every model reply is schema-validated (GeneratedMcq) before use. No model checks the answers:
+HR reviews and edits every question before a paper is accepted, so LLM questions carry
+verified=False. One provider call per batch, and every request waits for a shared slot, so a
+paper stays under the free-tier rate limit.
 
 API keys are read from settings, sent only in request headers, and never logged or put in errors.
 """
@@ -11,6 +12,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -40,7 +42,6 @@ OnProgress = Callable[[int, int], Awaitable[None]]
 # --------------------------------------------------------------------------------------------
 
 PROMPT_GEN_PREFIX = "paper_gen_"  # paper_gen_aptitude | paper_gen_reasoning | paper_gen_technical
-PROMPT_VERIFY = "paper_verify"
 PROMPT_COMPOSE = "paper_compose"
 COMPOSE_TEXT_CHARS = 200  # stem characters the composer sees per candidate
 
@@ -82,13 +83,6 @@ DEFAULT_PROMPTS: dict[str, str] = {
         "others are wrong. Put any code inside fenced code blocks (```language ... ```) in the "
         "question text, with real newlines.\n\n" + _JSON_SHAPE
     ),
-    PROMPT_VERIFY: (
-        "You are an expert examiner checking a multiple-choice question. Solve it yourself, "
-        "carefully and independently, then choose the single best option. If no option is "
-        "correct or more than one is equally correct, answer -1.\n"
-        "Reply with JSON only, exactly this shape: "
-        '{"work": "<your short working>", "answer": <0-3 or -1>}'
-    ),
     PROMPT_COMPOSE: (
         "You assemble the question pool for a campus recruitment screening test. You get "
         "candidate questions (id, level, section, topic, start of the text) grouped into cells "
@@ -121,10 +115,11 @@ STYLE_RULES: dict[str, str] = {
         "statement. Put every snippet in a fenced code block with the language name."
     ),
     "soft_skill": (
-        "Non-IT technical, SOFT SKILLS questions: situational judgement at work, choosing the "
-        "best response to a customer or colleague, workplace concepts, and choosing the most "
-        "appropriate message tone. No programming. Exactly one option must be clearly the best "
-        "professional response; `why` gives the rationale."
+        "Non-IT technical, ROLE KNOWLEDGE and SOFT SKILLS questions: practical knowledge the "
+        "stated role uses on the job, situational judgement at work, choosing the best response "
+        "to a customer or colleague, and choosing the most appropriate message tone. No "
+        "programming. Exactly one option must be clearly the best professional response; `why` "
+        "gives the rationale."
     ),
 }
 
@@ -197,6 +192,7 @@ def build_generation_prompt(
     count: int,
     avoid: Sequence[str] = (),
     overrides: Mapping[str, str] | None = None,
+    role: str | None = None,
 ) -> tuple[str, str]:
     system = get_prompt(f"{PROMPT_GEN_PREFIX}{section}", overrides)
     track_name = "IT (software / computer science)" if track == "it" else "Non-IT"
@@ -207,21 +203,17 @@ def build_generation_prompt(
         f"Style: {STYLE_RULES[style]}",
         "Each question must be self-contained and different from the others.",
     ]
+    if role and section == "technical":
+        lines.insert(
+            2,
+            f"Role being hired: {role}. Test the knowledge this role uses on the job. If the "
+            "topic above is not something this role works with, use the closest one it does.",
+        )
     if avoid:
         recent = list(avoid)[-MAX_AVOID:]
         lines.append("Do not repeat or paraphrase any of these existing questions:")
         lines.extend(f"- {' '.join(t.split())[:200]}" for t in recent)
     return system, "\n".join(lines)
-
-
-def build_verify_prompt(
-    text: str, options: Sequence[str], overrides: Mapping[str, str] | None = None
-) -> tuple[str, str]:
-    """BLIND: only the question and its options; never the answer or the explanation."""
-    system = get_prompt(PROMPT_VERIFY, overrides)
-    opts = "\n".join(f"{i}. {o}" for i, o in enumerate(options))
-    user = f"Question:\n{text}\n\nOptions (0-based index):\n{opts}"
-    return system, user
 
 
 # --------------------------------------------------------------------------------------------
@@ -269,10 +261,6 @@ class GeneratedMcq(BaseModel):
         if not 0 <= self.answer < 4:
             raise ValueError("answer must be an index from 0 to 3")
         return self
-
-
-class VerifierReply(BaseModel):
-    answer: int
 
 
 # --------------------------------------------------------------------------------------------
@@ -331,47 +319,9 @@ def _rate_limited(provider: str) -> AppError:
     )
 
 
-def _quota_exhausted(provider: str) -> AppError:
-    return AppError(
-        429,
-        "AI_PROVIDER_QUOTA_EXHAUSTED",
-        f"The {provider} daily quota for this API key is used up. Try again tomorrow, or use a "
-        "key with a higher quota.",
-        {"provider": provider.lower(), "provider_status": 429},
-    )
-
-
-def _google_rate_info(r: httpx.Response) -> tuple[float | None, bool]:
-    """(retryDelay seconds, per-day quota hit) from a Google-style 429 body.
-
-    Gemini sends no Retry-After header; it puts google.rpc.RetryInfo / QuotaFailure in the body.
-    """
-    try:
-        details = r.json()["error"]["details"]
-    except (ValueError, KeyError, TypeError):
-        return None, False
-    delay, daily = None, False
-    for d in details if isinstance(details, list) else []:
-        if not isinstance(d, dict):
-            continue
-        kind = str(d.get("@type", ""))
-        if kind.endswith("RetryInfo"):
-            try:
-                delay = float(str(d.get("retryDelay", "")).removesuffix("s"))
-            except ValueError:
-                pass
-        elif kind.endswith("QuotaFailure"):
-            violations = d.get("violations")
-            for v in violations if isinstance(violations, list) else []:
-                if isinstance(v, dict) and "PerDay" in str(v.get("quotaId", "")):
-                    daily = True
-    return delay, daily
-
-
 class _HttpJsonClient:
     """Shared POST + retry. 5xx/network errors: 3 short tries. 429: up to 6 tries, waiting as
-    long as the provider asks (Retry-After header or Gemini's body retryDelay), capped at 60 s.
-    A per-day quota 429 fails at once: retrying cannot help until the quota resets."""
+    long as the provider asks (Retry-After header), capped at 60 s."""
 
     provider = "LLM"
     max_attempts = 3
@@ -401,18 +351,17 @@ class _HttpJsonClient:
         return f"{type(self).__name__}(model={self.model!r})"
 
     def _delay(self, attempt: int, r: httpx.Response | None) -> float:
-        limited = r is not None and r.status_code == 429
         if r is not None:
             try:
                 return min(max(float(r.headers.get("retry-after", "")), 0.0), self.max_delay)
             except ValueError:
                 pass
-            if limited:
-                hint, _ = _google_rate_info(r)
-                if hint is not None:
-                    return min(max(hint, 0.0), self.max_delay)
+        limited = r is not None and r.status_code == 429
         base = self.rate_limit_base_delay if limited else self.base_delay
         return min(base * 2 ** (attempt - 1), self.max_delay)
+
+    async def _throttle(self) -> None:
+        """Wait for a request slot (providers with a per-minute limit override this)."""
 
     async def _post(self, url: str, headers: dict[str, str], body: dict) -> httpx.Response:
         last_status: int | None = None
@@ -422,6 +371,7 @@ class _HttpJsonClient:
             while True:
                 attempt += 1
                 r: httpx.Response | None = None
+                await self._throttle()
                 try:
                     r = await client.post(url, headers=headers, json=body)
                 except httpx.HTTPError as e:
@@ -430,9 +380,6 @@ class _HttpJsonClient:
                     last_status = None
                 else:
                     if r.status_code == 429:
-                        if _google_rate_info(r)[1]:
-                            log.warning("%s daily quota exhausted (HTTP 429)", self.provider)
-                            raise _quota_exhausted(self.provider)
                         rate_limited, last_status = True, 429
                     elif r.status_code >= 500:
                         last_status = r.status_code
@@ -461,49 +408,46 @@ class _HttpJsonClient:
         return _provider_error(self.provider, r.status_code)
 
 
-class GeminiClient(_HttpJsonClient):
-    """Gemini `models/{model}:generateContent` with JSON mode (responseMimeType)."""
+_next_slot = 0.0  # monotonic time of the next free request slot, shared by every NvidiaClient
 
-    provider = "Gemini"
-    base_url = "https://generativelanguage.googleapis.com/v1beta"
 
-    def __init__(self, api_key: str | None = None, model: str | None = None, **kw: Any):
+class NvidiaClient(_HttpJsonClient):
+    """NVIDIA NIM (build.nvidia.com) OpenAI-compatible chat completions.
+
+    One key serves every model, and the free tier limits the KEY (about 40 requests a minute), so
+    all instances share one slot clock: requests start at least 60 / nvidia_rpm seconds apart.
+    """
+
+    provider = "NVIDIA"
+    url = "https://integrate.api.nvidia.com/v1/chat/completions"
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        *,
+        temperature: float = 0.0,
+        rpm: int | None = None,
+        **kw: Any,
+    ):
         s = get_settings()
+        kw.setdefault("timeout", 180.0)  # large models, a batch of questions, no streaming
         super().__init__(
-            api_key if api_key is not None else s.gemini_api_key, model or s.gemini_model, **kw
+            api_key if api_key is not None else s.nvidia_api_key,
+            model or s.nvidia_generator_model,
+            **kw,
         )
+        self.temperature = temperature
+        self._interval = 60.0 / max(rpm if rpm is not None else s.nvidia_rpm, 1)
 
-    async def complete_json(self, *, system: str, user: str) -> dict:
-        r = await self._post(
-            f"{self.base_url}/models/{self.model}:generateContent",
-            {"x-goog-api-key": self._api_key},
-            {
-                "systemInstruction": {"parts": [{"text": system}]},
-                "contents": [{"role": "user", "parts": [{"text": user}]}],
-                "generationConfig": {"responseMimeType": "application/json"},
-            },
-        )
-        if r.is_error:
-            raise self._fail(r)
-        try:
-            parts = r.json()["candidates"][0]["content"]["parts"]
-            text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
-        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
-            raise LlmOutputError("Gemini reply had no text candidate") from e
-        return parse_json_object(text)
-
-
-class GroqClient(_HttpJsonClient):
-    """Groq OpenAI-compatible chat completions with response_format json_object."""
-
-    provider = "Groq"
-    url = "https://api.groq.com/openai/v1/chat/completions"
-
-    def __init__(self, api_key: str | None = None, model: str | None = None, **kw: Any):
-        s = get_settings()
-        super().__init__(
-            api_key if api_key is not None else s.groq_api_key, model or s.groq_model, **kw
-        )
+    async def _throttle(self) -> None:
+        # shortcut: per-process limiter, move to a shared store if the API runs more than one worker
+        global _next_slot
+        now = time.monotonic()
+        start = max(now, _next_slot)
+        _next_slot = start + self._interval  # reserved before any await, so no lock is needed
+        if start > now:
+            await self._sleep(start - now)
 
     async def complete_json(self, *, system: str, user: str) -> dict:
         r = await self._post(
@@ -515,30 +459,32 @@ class GroqClient(_HttpJsonClient):
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                "response_format": {"type": "json_object"},
-                "temperature": 0,
+                # no response_format: not every NIM model accepts it; replies are parsed and
+                # schema-validated here instead
+                "temperature": self.temperature,
+                "max_tokens": 16384,  # the composer lists every kept id; the default cap is small
+                # reasoning models otherwise spend the whole budget thinking and return no content
+                # (measured: 4096 reasoning tokens, content null); off is also 3x faster
+                "chat_template_kwargs": {"enable_thinking": False},
             },
         )
-        if r.status_code == 400 and "json_validate_failed" in r.text:
-            raise LlmOutputError("Groq could not produce valid JSON")
         if r.is_error:
             raise self._fail(r)
         try:
             text = r.json()["choices"][0]["message"]["content"]
         except (ValueError, KeyError, IndexError, TypeError) as e:
-            raise LlmOutputError("Groq reply had no message content") from e
+            raise LlmOutputError("NVIDIA reply had no message content") from e
         if not isinstance(text, str):
-            raise LlmOutputError("Groq reply had no message content")
+            raise LlmOutputError("NVIDIA reply had no message content")
         return parse_json_object(text)
 
 
 def providers_status() -> dict[str, bool]:
-    s = get_settings()
-    return {"gemini": bool(s.gemini_api_key), "groq": bool(s.groq_api_key)}
+    return {"nvidia": bool(get_settings().nvidia_api_key)}
 
 
 # --------------------------------------------------------------------------------------------
-# Generate + verify
+# Generate
 # --------------------------------------------------------------------------------------------
 
 
@@ -573,20 +519,8 @@ def _parse_questions(raw: Any, topic: str) -> list[GeneratedMcq]:
     return valid
 
 
-async def _verify(
-    verifier: LlmClient, q: GeneratedMcq, overrides: Mapping[str, str] | None
-) -> bool:
-    system, user = build_verify_prompt(q.text, q.options, overrides)
-    try:
-        reply = VerifierReply.model_validate(await verifier.complete_json(system=system, user=user))
-    except (LlmOutputError, ValidationError):
-        return False  # unusable verdict = not verified; never skipped
-    return reply.answer == q.answer
-
-
 async def generate_batch(
     generator: LlmClient,
-    verifier: LlmClient,
     *,
     track: Track,
     level: Level,
@@ -596,8 +530,10 @@ async def generate_batch(
     count: int,
     avoid: Sequence[str],
     overrides: Mapping[str, str] | None = None,
+    role: str | None = None,
 ) -> BatchResult:
-    """Generate `count` (<= BATCH_SIZE) questions, keep those the blind verifier agrees with.
+    """Generate `count` (<= BATCH_SIZE) questions in ONE provider call; keep the schema-valid,
+    non-duplicate ones.
 
     Provider failures (AppError) propagate; bad model output only rejects questions.
     """
@@ -616,6 +552,7 @@ async def generate_batch(
             count=n,
             avoid=[*avoid, *(q.text for q in result.accepted)],
             overrides=overrides,
+            role=role,
         )
         try:
             raw = await generator.complete_json(system=system, user=user)
@@ -644,23 +581,15 @@ async def generate_batch(
                 answer=q.answer,
                 why=q.why,
                 fixed_options=q.fixed_options,
-                verified=True,
+                verified=False,  # no model checks the key: HR reviews it
             )
         )
 
     questions, bad = await ask(count)
     result.rejected += bad
     for q in questions:
-        if not fresh(q):
-            result.rejected += 1
-            continue
-        if await _verify(verifier, q, overrides):
+        if fresh(q):
             accept(q)
-            continue
-        # one regeneration for a question the verifier disagreed with, then give up
-        retry, _ = await ask(1)
-        if retry and fresh(retry[0]) and await _verify(verifier, retry[0], overrides):
-            accept(retry[0])
         else:
             result.rejected += 1
     return result
@@ -719,14 +648,13 @@ def plan_batches(
 
 async def generate_pool(
     generator: LlmClient,
-    verifier: LlmClient,
     settings: PaperSettings,
     *,
     on_progress: OnProgress,
     overrides: Mapping[str, str] | None = None,
     sections: Sequence[Section] = SECTIONS,
 ) -> list[PoolQuestion]:
-    """Build the verified pool: needed x pool_factor per level+section, at most 3 batches at once.
+    """Build the pool: needed x pool_factor per level+section, at most 3 batches at once.
     `sections` limits generation to those sections (the others are left to other sources).
 
     on_progress(done, total) drives a progress bar, so it never moves backwards: `total` is
@@ -757,7 +685,6 @@ async def generate_pool(
         async with gate:
             res = await generate_batch(
                 generator,
-                verifier,
                 track=settings.track,
                 level=plan.level,
                 section=plan.section,
@@ -766,6 +693,7 @@ async def generate_pool(
                 count=plan.count,
                 avoid=[q.text for q in pool if q.section == plan.section],
                 overrides=overrides,
+                role=settings.role,
             )
         async with lock:
             for q in res.accepted:  # concurrent batches can still collide on text
@@ -817,8 +745,7 @@ async def generate_pool(
         raise AppError(
             422,
             "POOL_TOO_SMALL",
-            "Too few generated questions passed verification to build the paper. "
-            "Try generating again.",
+            "The AI returned too few usable questions to build the paper. Try generating again.",
             {"missing": missing, "pool_size": len(pool)},
         )
     if done < total:

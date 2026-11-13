@@ -28,7 +28,6 @@ from app.papers.schemas import (
     QuestionEdit,
     SendResult,
 )
-from app.qbank.embeddings import make_embedder
 
 log = logging.getLogger(__name__)
 
@@ -151,9 +150,8 @@ def ai_status() -> dict[str, bool]:
     return agents.providers_status()
 
 
-# IT: generators + PDF bank + Gemini composer. Non-IT: Technical still generated (Gemini) and
-# verified blind (Groq).
-REQUIRED_PROVIDERS = {"it": ("gemini",), "non_it": ("gemini", "groq")}
+# both tracks: Technical written and the sample composed by an NVIDIA model; HR verifies
+REQUIRED_PROVIDERS = ("nvidia",)
 
 
 def open_session() -> AsyncSession:
@@ -171,12 +169,7 @@ async def build_pool(
 ) -> list[PoolQuestion]:
     """The network step (see app.papers.pool). Tests monkeypatch this."""
     return await pipeline.build_pool(
-        session,
-        settings,
-        on_progress=on_progress,
-        overrides=overrides,
-        draft_id=draft_id,
-        embedder=make_embedder(),
+        settings, on_progress=on_progress, overrides=overrides, draft_id=draft_id
     )
 
 
@@ -261,13 +254,13 @@ async def create_draft(
     settings: PaperSettings,
 ) -> DraftOut:
     status = ai_status()
-    missing = [p for p in REQUIRED_PROVIDERS[settings.track] if not status.get(p)]
+    missing = [p for p in REQUIRED_PROVIDERS if not status.get(p)]
     if missing:
         raise AppError(
             503,
             "AI_PROVIDER_NOT_CONFIGURED",
             "AI question generation is not configured on the server "
-            f"(missing: {', '.join(m.capitalize() for m in missing)} API key).",
+            f"(missing: {', '.join(m.upper() for m in missing)} API key).",
             {"providers": missing},
         )
     row = await repo.insert_draft(
