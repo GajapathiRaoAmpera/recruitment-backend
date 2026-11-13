@@ -67,15 +67,17 @@ async def test_token_request_locks_config_and_keeps_key_in_header(key):
     assert body["uses"] == 1
     assert body["expireTime"] == "2026-11-13T10:45:00Z"
     assert body["newSessionExpireTime"] == "2026-11-13T10:02:00Z"
-    c = body["liveConnectConstraints"]
-    assert c["model"] == "models/gemini-3.8-live"
-    cfg = c["config"]
+    cfg = body[
+        "bidiGenerateContentSetup"
+    ]  # the REST name (a real call rejects liveConnectConstraints)
+    assert cfg["model"] == "models/gemini-3.8-live"
     assert cfg["systemInstruction"] == {"parts": [{"text": "BE AN INTERVIEWER"}]}
-    assert cfg["responseModalities"] == ["AUDIO"]
+    gen = cfg["generationConfig"]
+    assert gen["responseModalities"] == ["AUDIO"] and "responseModalities" not in cfg
     assert cfg["inputAudioTranscription"] == {} and cfg["outputAudioTranscription"] == {}
     assert cfg["contextWindowCompression"] == {"slidingWindow": {}}
     assert cfg["sessionResumption"] == {}
-    assert cfg["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Kore"
+    assert gen["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Kore"
 
 
 @sync
@@ -272,7 +274,7 @@ async def test_token_config_declares_the_answer_box_tool(key):
         return httpx.Response(200, json={"name": "t"})
 
     await _mint(handler)
-    tools = seen["body"]["liveConnectConstraints"]["config"]["tools"]
+    tools = seen["body"]["bidiGenerateContentSetup"]["tools"]
     decl = tools[0]["functionDeclarations"][0]
     assert decl["name"] == "show_answer_box"
     assert decl["parameters"]["required"] == ["question", "mode"]

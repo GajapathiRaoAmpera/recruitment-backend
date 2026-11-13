@@ -33,7 +33,7 @@ A shortlisted student talks to an AI interviewer by voice for 35–45 minutes (t
 - Interviews run 35–45 minutes (user decision). Gemini Live does not do that by default: an audio-only session ends at **15 minutes** and each connection at about **10 minutes**. Both are lifted with two config switches:
   - `contextWindowCompression: { slidingWindow: {} }` removes the 15-minute cap. The model then forgets the oldest part of the conversation as it goes.
   - `sessionResumption: { handle }`: the server sends `sessionResumptionUpdate.newHandle`; before a connection ends it sends `goAway.timeLeft`; the browser reconnects with the latest handle. Handles last 2 hours. The same token works for these reconnects even with `uses: 1`.
-- Ephemeral tokens: `POST https://generativelanguage.googleapis.com/v1beta/auth_tokens`, header `x-goog-api-key`, body `uses`, `expireTime`, `newSessionExpireTime`, `liveConnectConstraints {model, config}`. v1beta only, Live API only.
+- Ephemeral tokens: `POST https://generativelanguage.googleapis.com/v1beta/auth_tokens`, header `x-goog-api-key`, body `uses`, `expireTime`, `newSessionExpireTime`, `bidiGenerateContentSetup {model, generationConfig{responseModalities, speechConfig}, systemInstruction, ...}` (the docs page shows the SDK name `liveConnectConstraints`, which REST rejects; checked with a real call 2026-11-14). v1beta only, Live API only.
 - Transcription is switched on in the session config (`inputAudioTranscription`, `outputAudioTranscription`) and arrives as `inputTranscription.text` / `outputTranscription.text` in server messages.
 - Audio in: 16-bit PCM, 16 kHz, `audio/pcm;rate=16000`. Audio out: 16-bit PCM, 24 kHz.
 - Model id used in Google's examples: `gemini-3.8-live` (config value, not hard-coded).

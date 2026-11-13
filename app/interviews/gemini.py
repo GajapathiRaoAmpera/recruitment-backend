@@ -2,7 +2,7 @@
 
 The API key is read from settings, sent only in the `x-goog-api-key` header and never logged, put
 in an error, or returned. The token is locked to the model and the full session config (system
-instruction included) through `liveConnectConstraints`, so the browser can't swap the prompt.
+instruction included) through `bidiGenerateContentSetup`, so the browser can't swap the prompt.
 
 Unconfirmed until a call with a real key (docs/09 "Known limits"): whether the lock covers the
 system instruction. The browser never sends an instruction of its own either way.
@@ -58,6 +58,14 @@ def client_config(voice: str | None) -> dict[str, Any]:
     return config
 
 
+def rest_setup(model: str, config: dict[str, Any]) -> dict[str, Any]:
+    """The SDK's flat Live config as the REST `bidiGenerateContentSetup` (verified against a real
+    call: REST rejects `liveConnectConstraints`, and modalities/voice live in generationConfig)."""
+    setup = {k: v for k, v in config.items() if k not in ("responseModalities", "speechConfig")}
+    gen = {k: config[k] for k in ("responseModalities", "speechConfig") if k in config}
+    return {"model": model, **({"generationConfig": gen} if gen else {}), **setup}
+
+
 def _iso(t: datetime) -> str:
     return t.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -79,10 +87,10 @@ async def mint_token(
         "uses": 1,
         "expireTime": _iso(expire_at),
         "newSessionExpireTime": _iso(new_session_until),
-        "liveConnectConstraints": {
-            "model": model if model.startswith("models/") else f"models/{model}",
-            "config": live_config(system_instruction, s.gemini_live_voice),
-        },
+        "bidiGenerateContentSetup": rest_setup(
+            model if model.startswith("models/") else f"models/{model}",
+            live_config(system_instruction, s.gemini_live_voice),
+        ),
     }
     try:
         async with httpx.AsyncClient(
