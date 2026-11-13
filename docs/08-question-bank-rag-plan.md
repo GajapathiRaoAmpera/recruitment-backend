@@ -1,3 +1,5 @@
+> **Superseded (2026-11-13):** the PDF question bank and RAG retrieval were removed from the code. Technical questions are now written for the drive's role by an NVIDIA model and checked by HR. The database tables from migration 0004 remain, unused. Kept for history only.
+
 # PDF Question Bank + RAG + Generators Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. Steps use checkbox (`- [ ]`) syntax. **No commits** (user commits).

@@ -13,8 +13,7 @@ from app.core.config import get_settings
 from app.core.errors import AppError
 from app.papers import agents
 from app.papers.agents import (
-    GeminiClient,
-    GroqClient,
+    NvidiaClient,
     generate_batch,
     generate_pool,
     get_prompt,
@@ -64,27 +63,11 @@ class ScriptedGen:
         return reply
 
 
-class OracleVerifier:
-    """Answers correctly using the generator's key (looked up by text), unless told to disagree."""
-
-    def __init__(self, gen: ScriptedGen, wrong_on: set[str] = frozenset()):
-        self.gen, self.wrong_on = gen, wrong_on
-        self.calls: list[tuple[str, str]] = []
-
-    async def complete_json(self, *, system: str, user: str) -> dict:
-        self.calls.append((system, user))
-        text = " ".join(user.split("Question:\n", 1)[1].split("\n\nOptions")[0].split())
-        answer = self.gen.answers[text]
-        if any(w in text for w in self.wrong_on):
-            answer = (answer + 1) % 4
-        return {"work": "solved", "answer": answer}
-
-
 def run(coro):
     return asyncio.run(coro)
 
 
-def batch(gen, ver, count=3, avoid=(), **kw):
+def batch(gen, count=3, avoid=(), **kw):
     params = dict(
         track="it",
         level="easy",
@@ -95,7 +78,7 @@ def batch(gen, ver, count=3, avoid=(), **kw):
         avoid=list(avoid),
     )
     params.update(kw)
-    return run(generate_batch(gen, ver, **params))
+    return run(generate_batch(gen, **params))
 
 
 def make_settings(**kw) -> PaperSettings:
@@ -116,24 +99,24 @@ async def _noop_progress(done: int, total: int) -> None:
 # ---------------------------------------------------------------- batch validation
 
 
-def test_valid_json_accepted():
+def test_valid_json_accepted_in_one_call_and_left_for_hr_to_verify():
     gen = ScriptedGen({"questions": [mcq(), mcq(answer=0), mcq(answer=3)]})
-    ver = OracleVerifier(gen)
-    res = batch(gen, ver, count=3)
+    res = batch(gen, count=3)
     assert res.rejected == 0
     assert len(res.accepted) == 3
     q = res.accepted[0]
-    assert (q.level, q.section, q.style, q.verified) == ("easy", "aptitude", "aptitude", True)
+    # no AI checks the key any more: HR does, so the question is not marked verified
+    assert (q.level, q.section, q.style, q.verified) == ("easy", "aptitude", "aptitude", False)
     assert len({q.id for q in res.accepted}) == 3
+    assert len(gen.calls) == 1  # free-tier budget: one provider call per batch
 
 
 def test_malformed_json_rejected():
     gen = ScriptedGen({"questions": "not a list"}, agents.LlmOutputError("bad json"), {"oops": []})
-    ver = OracleVerifier(gen)
     for _ in range(3):
-        res = batch(gen, ver, count=2)
+        res = batch(gen, count=2)
         assert res.accepted == [] and res.rejected == 2
-    assert ver.calls == []
+    assert len(gen.calls) == 3  # bad output is never retried inside a batch
     with pytest.raises(agents.LlmOutputError):
         parse_json_object("Sure! here is your JSON: {")
     assert parse_json_object('```json\n{"a": 1}\n```') == {"a": 1}
@@ -142,7 +125,7 @@ def test_malformed_json_rejected():
 def test_wrong_option_count_rejected():
     bad = mcq(options=["a", "b", "c"])
     gen = ScriptedGen({"questions": [bad, mcq(answer=7), mcq(answer=True), mcq()]})
-    res = batch(gen, OracleVerifier(gen), count=4)
+    res = batch(gen, count=4)
     assert len(res.accepted) == 1 and res.rejected == 3
 
 
@@ -151,53 +134,27 @@ def test_duplicate_options_rejected():
     aota = mcq(options=["1", "2", "3", "All of the above"])
     blank_why = mcq(why="  ")
     gen = ScriptedGen({"questions": [dup, aota, blank_why]})
-    res = batch(gen, OracleVerifier(gen), count=3)
+    res = batch(gen, count=3)
     assert res.accepted == [] and res.rejected == 3
 
 
-def test_verifier_disagreement_rejected_after_one_retry():
-    first, regen = mcq(text="Disputed one?"), mcq(text="Disputed again?")
-    gen = ScriptedGen({"questions": [first, mcq(text="Fine question?")]}, {"questions": [regen]})
-    ver = OracleVerifier(gen, wrong_on={"Disputed"})
-    res = batch(gen, ver, count=2)
-    assert [q.text for q in res.accepted] == ["Fine question?"]
-    assert res.rejected == 1
-    assert len(gen.calls) == 2  # exactly one regeneration
-    assert "Write exactly 1" in gen.calls[1][1]
+def test_role_reaches_only_the_technical_prompt():
+    gen = ScriptedGen()
+    settings = make_settings(role="  Java   Backend Developer ")
+    run(generate_pool(gen, settings, on_progress=_noop_progress))
+    line = "Role being hired: Java Backend Developer."
+    assert all((line in u) == ("Section: technical" in u) for _, u in gen.calls)
 
-    # a regenerated question that the verifier agrees with is kept
-    gen2 = ScriptedGen({"questions": [mcq(text="Disputed x?")]}, {"questions": [mcq()]})
-    res2 = batch(gen2, OracleVerifier(gen2, wrong_on={"Disputed"}), count=1)
-    assert len(res2.accepted) == 1 and res2.rejected == 0
-
-
-def test_verifier_is_blind():
-    q = mcq(text="What is 10% of 50?", why="SECRET-WHY 10/100*50 = 5", answer=2)
-    gen = ScriptedGen({"questions": [q]})
-    ver = OracleVerifier(gen)
-    batch(gen, ver, count=1)
-    ((system, user),) = ver.calls
-    assert "SECRET-WHY" not in system + user
-    assert "What is 10% of 50?" in user and all(o in user for o in q["options"])
-    assert '"answer": 2' not in user and "correct" not in user.lower()
-
-
-def test_unusable_verifier_reply_counts_as_disagreement():
-    gen = ScriptedGen({"questions": [mcq()]}, {"questions": [mcq()]})
-
-    class Garbage:
-        async def complete_json(self, *, system, user):
-            return {"answer": "B?"}
-
-    res = batch(gen, Garbage(), count=1)
-    assert res.accepted == [] and res.rejected == 1
+    gen2 = ScriptedGen()  # drafts saved before `role` existed
+    run(generate_pool(gen2, make_settings(), on_progress=_noop_progress))
+    assert not any("Role being hired" in u for _, u in gen2.calls)
 
 
 def test_duplicate_text_dropped():
     gen = ScriptedGen(
         {"questions": [mcq(text="Old  question?"), mcq(text="New one?"), mcq(text="new ONE?")]}
     )
-    res = batch(gen, OracleVerifier(gen), count=3, avoid=["old question?"])
+    res = batch(gen, count=3, avoid=["old question?"])
     assert [q.text for q in res.accepted] == ["New one?"]
     assert res.rejected == 2
     assert "old question?" in gen.calls[0][1]  # the generator is told what to avoid
@@ -209,8 +166,7 @@ def test_duplicate_text_dropped():
 @pytest.fixture
 def settings_env(monkeypatch):
     def apply(**env):
-        for k in ("GEMINI_API_KEY", "GROQ_API_KEY"):
-            monkeypatch.delenv(k, raising=False)
+        monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
         for k, v in env.items():
             monkeypatch.setenv(k, v)
         get_settings.cache_clear()
@@ -219,16 +175,28 @@ def settings_env(monkeypatch):
     get_settings.cache_clear()
 
 
-def test_missing_key_raises_not_configured(settings_env):
-    settings_env(GEMINI_API_KEY="", GROQ_API_KEY="   ")
-    assert providers_status() == {"gemini": False, "groq": False}
-    for cls in (GeminiClient, GroqClient):
-        with pytest.raises(AppError) as e:
-            cls()
-        assert (e.value.status, e.value.code) == (503, "AI_PROVIDER_NOT_CONFIGURED")
+@pytest.fixture
+def no_throttle(monkeypatch):
+    """Retry tests assert the exact waits, so the request-slot wait is switched off."""
 
-    settings_env(GEMINI_API_KEY=SECRET, GROQ_API_KEY="")  # explicit: else a real .env key leaks in
-    assert providers_status() == {"gemini": True, "groq": False}
+    async def free(self) -> None:
+        pass
+
+    monkeypatch.setattr(NvidiaClient, "_throttle", free)
+
+
+def test_missing_key_raises_not_configured(settings_env):
+    settings_env(NVIDIA_API_KEY="   ")  # explicit: else a real .env key leaks in
+    assert providers_status() == {"nvidia": False}  # blank counts as missing
+    with pytest.raises(AppError) as e:
+        NvidiaClient()
+    assert (e.value.status, e.value.code) == (503, "AI_PROVIDER_NOT_CONFIGURED")
+    assert e.value.details == {"provider": "nvidia"}
+
+    settings_env(NVIDIA_API_KEY="")
+    assert providers_status() == {"nvidia": False}
+    settings_env(NVIDIA_API_KEY=SECRET)
+    assert providers_status() == {"nvidia": True}
 
 
 def _sleeps():
@@ -240,14 +208,11 @@ def _sleeps():
     return waits, sleep
 
 
-def _google_429(*details):
-    return httpx.Response(429, json={"error": {"code": 429, "details": list(details)}})
+def _ok(content: str = "{}") -> httpx.Response:
+    return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
 
 
-RETRY_INFO = {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "37s"}
-
-
-def test_429_retries_patiently_then_rate_limited_error():
+def test_429_retries_patiently_then_rate_limited_error(no_throttle):
     hits = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -255,70 +220,33 @@ def test_429_retries_patiently_then_rate_limited_error():
         return httpx.Response(429, json={"error": "rate limited"})
 
     waits, sleep = _sleeps()
-    client = GroqClient(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
+    client = NvidiaClient(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
     with pytest.raises(AppError) as e:
         run(client.complete_json(system="s", user="u"))
     assert (e.value.status, e.value.code) == (429, "AI_PROVIDER_RATE_LIMITED")
-    assert e.value.details == {"provider": "groq", "provider_status": 429}
+    assert e.value.details == {"provider": "nvidia", "provider_status": 429}
     assert "Wait a minute" in e.value.message
     # rate limits get more attempts and longer waits than 5xx (1 minute provider windows)
     assert len(hits) == 6 and len(waits) == 5
     assert waits == sorted(waits) and waits[0] >= 5 and max(waits) <= 60
 
 
-def test_429_waits_for_gemini_retry_delay_in_body():
-    replies = [_google_429(RETRY_INFO)]
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if replies:
-            return replies.pop()
-        parts = [{"text": '{"questions": []}'}]
-        return httpx.Response(200, json={"candidates": [{"content": {"parts": parts}}]})
-
-    waits, sleep = _sleeps()
-    gem = GeminiClient(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
-    assert run(gem.complete_json(system="s", user="u")) == {"questions": []}
-    assert waits == [37.0]
-
-
-def test_retry_after_header_wins_and_is_capped():
+def test_retry_after_header_wins_and_is_capped(no_throttle):
     replies = [
         httpx.Response(429, headers={"retry-after": "500"}),
         httpx.Response(429, headers={"retry-after": "2"}),
     ]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if replies:
-            return replies.pop(0)
-        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+        return replies.pop(0) if replies else _ok()
 
     waits, sleep = _sleeps()
-    groq = GroqClient(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
-    assert run(groq.complete_json(system="s", user="u")) == {}
+    client = NvidiaClient(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
+    assert run(client.complete_json(system="s", user="u")) == {}
     assert waits == [60.0, 2.0]
 
 
-def test_429_daily_quota_fails_fast_with_clear_message():
-    hits = []
-    quota = {
-        "@type": "type.googleapis.com/google.rpc.QuotaFailure",
-        "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}],
-    }
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        hits.append(request)
-        return _google_429(quota, RETRY_INFO)
-
-    waits, sleep = _sleeps()
-    gem = GeminiClient(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
-    with pytest.raises(AppError) as e:
-        run(gem.complete_json(system="s", user="u"))
-    assert (e.value.status, e.value.code) == (429, "AI_PROVIDER_QUOTA_EXHAUSTED")
-    assert "daily" in e.value.message and e.value.details["provider"] == "gemini"
-    assert len(hits) == 1 and waits == []
-
-
-def test_5xx_keeps_three_short_attempts():
+def test_5xx_keeps_three_short_attempts(no_throttle):
     hits = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -326,57 +254,85 @@ def test_5xx_keeps_three_short_attempts():
         return httpx.Response(503)
 
     waits, sleep = _sleeps()
-    groq = GroqClient(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
+    client = NvidiaClient(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
     with pytest.raises(AppError) as e:
-        run(groq.complete_json(system="s", user="u"))
+        run(client.complete_json(system="s", user="u"))
     assert e.value.code == "AI_PROVIDER_ERROR" and e.value.details["provider_status"] == 503
     assert len(hits) == 3 and waits == [1.0, 2.0]
 
 
-def test_retry_then_success_and_request_formats():
+def test_retry_then_success_and_request_format(no_throttle):
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        if len(seen) == 1:
-            return httpx.Response(503)
-        if "groq" in request.url.host:
-            content = '{"answer": 2}'
-            return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
-        parts = [{"text": "thinking...", "thought": True}, {"text": '{"questions": []}'}]
-        return httpx.Response(200, json={"candidates": [{"content": {"parts": parts}}]})
+        # a fenced reply: models without a JSON mode often wrap their JSON
+        return httpx.Response(503) if len(seen) == 1 else _ok('```json\n{"answers": []}\n```')
 
     waits, sleep = _sleeps()
-    groq = GroqClient(SECRET, "groq-m", sleep=sleep, transport=httpx.MockTransport(handler))
-    assert run(groq.complete_json(system="s", user="u")) == {"answer": 2}
-    body = json.loads(seen[-1].content)
-    assert body["response_format"] == {"type": "json_object"} and body["model"] == "groq-m"
-    assert seen[-1].headers["authorization"] == f"Bearer {SECRET}"
+    client = NvidiaClient(
+        SECRET, "big-m", temperature=0.7, sleep=sleep, transport=httpx.MockTransport(handler)
+    )
+    assert run(client.complete_json(system="s", user="u")) == {"answers": []}
+    req = seen[-1]
+    assert str(req.url) == "https://integrate.api.nvidia.com/v1/chat/completions"
+    assert req.headers["authorization"] == f"Bearer {SECRET}"
+    body = json.loads(req.content)
+    assert body["model"] == "big-m" and body["temperature"] == 0.7
+    assert body["max_tokens"] >= 4096  # room for a batch of 8 questions with explanations
+    # without this, reasoning models return content=None after using every token on thinking
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert [m["role"] for m in body["messages"]] == ["system", "user"]
     assert len(waits) == 1
 
-    seen.clear()
-    gem = GeminiClient(SECRET, "gem-m", sleep=sleep, transport=httpx.MockTransport(handler))
-    assert run(gem.complete_json(system="s", user="u")) == {"questions": []}
-    req = seen[-1]
-    assert req.url.path.endswith("/models/gem-m:generateContent")
-    assert SECRET not in str(req.url)
-    assert req.headers["x-goog-api-key"] == SECRET
-    body = json.loads(req.content)
-    assert body["generationConfig"]["responseMimeType"] == "application/json"
+
+def test_unusable_reply_is_an_output_error(no_throttle):
+    replies = [httpx.Response(200, json={"choices": []}), _ok("Sure! Here you go")]
+    _, sleep = _sleeps()
+    transport = httpx.MockTransport(lambda request: replies.pop(0))
+    client = NvidiaClient(SECRET, "m", sleep=sleep, transport=transport)
+    for _ in range(2):
+        with pytest.raises(agents.LlmOutputError):
+            run(client.complete_json(system="s", user="u"))
 
 
-def test_keys_never_in_errors_or_logs(caplog):
-    caplog.set_level(logging.DEBUG)
+def test_requests_are_spaced_to_stay_under_the_free_tier_limit(monkeypatch):
+    monkeypatch.setattr(agents, "_next_slot", 0.0)
+    hits = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.host.endswith("groq.com"):
-            raise httpx.ConnectError(f"boom {request.headers['authorization']}", request=request)
+        hits.append(request)
+        return httpx.Response(503) if len(hits) == 3 else _ok()
+
+    waits, sleep = _sleeps()
+    kw = dict(rpm=30, sleep=sleep, transport=httpx.MockTransport(handler))
+    gen, other = NvidiaClient(SECRET, "gen-m", **kw), NvidiaClient(SECRET, "other-m", **kw)
+
+    async def paper():
+        await gen.complete_json(system="s", user="u")
+        await other.complete_json(system="s", user="u")  # other client, same key: same clock
+        await gen.complete_json(system="s", user="u")  # 503, then the retry also takes a slot
+
+    run(paper())
+    assert len(hits) == 4
+    slots = [w for w in waits if w != 1.0]  # 1.0 is the 5xx retry backoff
+    # the fake sleep does not move the clock, so the waits grow by one 2 s slot per request
+    assert [round(w) for w in slots] == [2, 4, 6]
+
+
+def test_keys_never_in_errors_or_logs(caplog, no_throttle):
+    caplog.set_level(logging.DEBUG)
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(f"boom {request.headers['authorization']}", request=request)
+
+    def denied(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"error": {"message": f"bad key {SECRET}"}})
 
     _, sleep = _sleeps()
     errors = []
-    for cls in (GeminiClient, GroqClient):
-        client = cls(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
+    for handler in (boom, denied):
+        client = NvidiaClient(SECRET, "m", sleep=sleep, transport=httpx.MockTransport(handler))
         assert SECRET not in repr(client)
         with pytest.raises(AppError) as e:
             run(client.complete_json(system="s", user="u"))
@@ -401,14 +357,13 @@ def _cell_counts(pool):
 def test_generate_pool_covers_needed_counts_times_factor():
     settings = make_settings(counts={"easy": 10, "medium": 6, "advanced": 4}, pool_factor=2)
     gen = ScriptedGen()
-    pool = run(generate_pool(gen, OracleVerifier(gen), settings, on_progress=_noop_progress))
+    pool = run(generate_pool(gen, settings, on_progress=_noop_progress))
     want = needed(settings)
     counts = _cell_counts(pool)
     for lv in LEVELS:
         for s in SECTIONS:
             assert counts[(lv, s)] == want[lv][s] * 2
     assert len({q.text for q in pool}) == len(pool)
-    assert all(q.verified for q in pool)
     # every generator call stays within a batch of 8
     assert all(int(re.search(r"Write exactly (\d+)", u).group(1)) <= 8 for _, u in gen.calls)
     tech = [q for q in pool if q.section == "technical"]
@@ -416,11 +371,9 @@ def test_generate_pool_covers_needed_counts_times_factor():
 
 
 def test_generate_pool_raises_pool_too_small():
-    settings = make_settings()
-    gen = ScriptedGen()
-    ver = OracleVerifier(gen, wrong_on={"Question"})  # verifier rejects everything
+    gen = ScriptedGen(*[{"questions": []}] * 100)  # the model never returns a usable question
     with pytest.raises(AppError) as e:
-        run(generate_pool(gen, ver, settings, on_progress=_noop_progress))
+        run(generate_pool(gen, make_settings(), on_progress=_noop_progress))
     assert (e.value.status, e.value.code) == (422, "POOL_TOO_SMALL")
     assert e.value.details["missing"]
 
@@ -430,9 +383,8 @@ def test_generate_pool_provider_error_propagates():
         async def complete_json(self, *, system, user):
             raise AppError(502, "AI_PROVIDER_ERROR", "down")
 
-    gen = ScriptedGen()
     with pytest.raises(AppError) as e:
-        run(generate_pool(gen, Down(), make_settings(), on_progress=_noop_progress))
+        run(generate_pool(Down(), make_settings(), on_progress=_noop_progress))
     assert e.value.code == "AI_PROVIDER_ERROR"
 
 
@@ -443,7 +395,7 @@ def test_progress_reported_monotonically():
         events.append((done, total))
 
     gen = ScriptedGen()
-    run(generate_pool(gen, OracleVerifier(gen), make_settings(), on_progress=on_progress))
+    run(generate_pool(gen, make_settings(), on_progress=on_progress))
     assert events[0][0] == 0
     dones = [d for d, _ in events]
     assert dones == sorted(dones)
@@ -466,18 +418,9 @@ def test_progress_never_goes_backwards_when_top_up_runs(monkeypatch):
     async def on_progress(done, total):
         events.append((done, total))
 
-    class RejectFirst(OracleVerifier):
-        """Disagrees on the first 6 verifications, so cells fall short and a top-up runs."""
-
-        async def complete_json(self, *, system, user):
-            reply = await super().complete_json(system=system, user=user)
-            if len(self.calls) <= 6:
-                reply["answer"] = (reply["answer"] + 1) % 4
-            return reply
-
-    gen = ScriptedGen()
+    gen = ScriptedGen(*[{"questions": []}] * 6)  # first 6 batches come back empty -> top-up
     settings = make_settings(pool_factor=1)
-    pool = run(generate_pool(gen, RejectFirst(gen), settings, on_progress=on_progress))
+    pool = run(generate_pool(gen, settings, on_progress=on_progress))
     want = needed(settings)
     assert _cell_counts(pool) == {(lv, s): want[lv][s] for lv in LEVELS for s in SECTIONS}
     assert top_ups  # the scenario really exercised the top-up round
@@ -505,13 +448,13 @@ def test_generate_pool_runs_at_most_three_batches_at_once():
 
     gen = SlowGen()
     settings = make_settings(counts={"easy": 20, "medium": 20, "advanced": 20})
-    run(generate_pool(gen, OracleVerifier(gen), settings, on_progress=_noop_progress))
+    run(generate_pool(gen, settings, on_progress=_noop_progress))
     assert 1 < peak <= 3
 
 
 def test_it_prompt_mentions_syntax_and_non_it_mentions_soft_skills():
     gen = ScriptedGen()
-    run(generate_pool(gen, OracleVerifier(gen), make_settings(), on_progress=_noop_progress))
+    run(generate_pool(gen, make_settings(), on_progress=_noop_progress))
     it_tech = [u for _, u in gen.calls if "Section: technical" in u]
     assert it_tech and any("SYNTAX" in u and "fenced code block" in u for u in it_tech)
     assert any("CONCEPT" in u for u in it_tech)
@@ -519,7 +462,7 @@ def test_it_prompt_mentions_syntax_and_non_it_mentions_soft_skills():
 
     gen2 = ScriptedGen()
     settings = make_settings(track="non_it")
-    run(generate_pool(gen2, OracleVerifier(gen2), settings, on_progress=_noop_progress))
+    run(generate_pool(gen2, settings, on_progress=_noop_progress))
     non_it = [u for _, u in gen2.calls if "Section: technical" in u]
     assert non_it and all("SOFT SKILLS" in u for u in non_it)
     assert not any("SYNTAX" in u for u in non_it)
@@ -533,15 +476,13 @@ def test_it_prompt_mentions_syntax_and_non_it_mentions_soft_skills():
 
 
 def test_prompt_overrides():
-    assert get_prompt("paper_verify") == agents.DEFAULT_PROMPTS["paper_verify"]
-    assert get_prompt("paper_verify", {"paper_verify": "CUSTOM"}) == "CUSTOM"
-    assert (
-        get_prompt("paper_verify", {"paper_verify": "  "}) == agents.DEFAULT_PROMPTS["paper_verify"]
-    )
+    default = agents.DEFAULT_PROMPTS["paper_compose"]
+    assert get_prompt("paper_compose") == default
+    assert get_prompt("paper_compose", {"paper_compose": "CUSTOM"}) == "CUSTOM"
+    assert get_prompt("paper_compose", {"paper_compose": "  "}) == default
     with pytest.raises(ValueError):
         get_prompt("nope")
 
     gen = ScriptedGen({"questions": [mcq()]})
-    ver = OracleVerifier(gen)
-    batch(gen, ver, count=1, overrides={"paper_gen_aptitude": "GEN-X", "paper_verify": "VER-X"})
-    assert gen.calls[0][0] == "GEN-X" and ver.calls[0][0] == "VER-X"
+    batch(gen, count=1, overrides={"paper_gen_aptitude": "GEN-X"})
+    assert gen.calls[0][0] == "GEN-X"

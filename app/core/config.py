@@ -16,15 +16,6 @@ class Settings(BaseSettings):
     resume_dir: str = (
         "storage/resumes"  # resume PDFs are saved here (relative to where you start the app)
     )
-    # question-bank PDFs are saved here (same local-disk shortcut as resume_dir)
-    qbank_dir: str = "storage/qbank"
-    qbank_max_mb: int = 20  # upload size limit for a question-bank PDF
-    # question-bank RAG embeddings: free local model via fastembed (no API key). embedding_dim
-    # must match question_embeddings.embedding vector(384) (0004); changing the model needs a
-    # new migration and a re-embed of every bank.
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    embedding_dim: int = 384
-    embedding_cache_dir: str = "storage/models"  # model files (~90 MB), downloaded on first use
     frontend_url: str = "http://localhost:3000"  # invite emails link back here
     judge0_url: str = "http://localhost:2358"  # self-hosted Judge0 (infra/judge0)
     judge0_auth_token: str = ""  # sent as X-Auth-Token; same value the Judge0 stack is started with
@@ -33,6 +24,15 @@ class Settings(BaseSettings):
     groq_api_key: str | None = None
     gemini_model: str = "gemini-3.6-flash"  # generator (ai.google.dev/gemini-api/docs/models)
     groq_model: str = "openai/gpt-oss-120b"  # blind verifier (console.groq.com/docs/models)
+    # Round 1 paper builder LLMs. The key is server only; missing => AI_PROVIDER_NOT_CONFIGURED
+    # One NVIDIA key (build.nvidia.com); model ids are listed at
+    # integrate.api.nvidia.com/v1/models
+    nvidia_api_key: str | None = None
+    # writes the Technical questions and composes the sample. Answers on a free key (many listed
+    # models return 404 or time out, e.g. meta/llama-3.2-90b-vision-instruct). Faster, smaller
+    # alternative: nvidia/nemotron-3.5-super-vl-120b-a12b
+    nvidia_generator_model: str = "nvidia/nemotron-3-ultra-550b-a55b"
+    nvidia_rpm: int = 30  # requests per minute sent to NVIDIA (the free tier allows about 40)
 
     @field_validator("database_url")
     @classmethod
@@ -51,10 +51,10 @@ class Settings(BaseSettings):
             self.supabase_secret_key.encode(), b"student-entry-token", "sha256"
         ).hexdigest()
 
-    @field_validator("gemini_api_key", "groq_api_key")
+    @field_validator("nvidia_api_key")
     @classmethod
     def _blank_is_missing(cls, v: str | None) -> str | None:
-        # `GEMINI_API_KEY=` in .env means "not configured", not an empty key
+        # `NVIDIA_API_KEY=` in .env means "not configured", not an empty key
         return v.strip() or None if v is not None else None
 
 

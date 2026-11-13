@@ -1,4 +1,4 @@
-"""Composer (one Gemini call that picks which candidates are selected). Fake clients only."""
+"""Composer (one model call that picks which candidates are selected). Fake clients only."""
 
 import asyncio
 import json

@@ -261,7 +261,10 @@ create index paper_drafts_drive_ref_idx on paper_drafts (drive_ref);
 alter table paper_drafts enable row level security;
 alter table paper_issues enable row level security;
 
--- 0004_question_bank: uploaded MCQ PDF banks + RAG embeddings (pgvector). Written, not applied.
+-- 0004_question_bank: uploaded MCQ PDF banks + RAG embeddings (pgvector).
+-- UNUSED since 2026-11-13: the question-bank code was removed (Technical questions are written by an
+-- NVIDIA model). These tables and columns are kept so no uploaded bank is lost; nothing reads or writes them.
+-- Dropping them needs a new migration.
 create extension if not exists vector;
 
 create table question_sources (                         -- one uploaded bank file
