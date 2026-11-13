@@ -19,6 +19,16 @@ def test_valid_defaults():
     assert s.pool_factor == 2 and s.duration_min == 60 and s.it_syntax_percent == 50
 
 
+def test_role_is_optional_and_normalised():
+    assert make().role is None  # drafts saved before the field existed still load
+    assert make(role="  Java   Backend\nDeveloper ").role == "Java Backend Developer"
+    assert make(role="   ").role is None
+    # settings of older drafts carry the removed question-bank keys: ignored, not an error
+    assert make(subjects={"Operating Systems": 100}, focus="scheduling").role is None
+    with pytest.raises(ValidationError):
+        make(role="x" * 121)
+
+
 def test_mix_must_sum_to_100():
     with pytest.raises(ValidationError):
         make(mix={"aptitude": 30, "reasoning": 30, "technical": 30})

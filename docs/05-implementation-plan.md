@@ -35,7 +35,7 @@ Suggested split once decided: **A** Auth+Admin, **B** Intake+Parser, **C** Round
 | 3.5 | Aptitude test screen with local draft + server sync | frontend | FR-17 AC-6 | |
 | 3.6 | `/rounds/{id}/advance` + EmailSender + email templates | backend | FR-12,26 | |
 | 3.7 | Round 1 paper builder (`/papers/*`: LLM-generated sample paper, HR edit, accept, send; plan of record `07-round1-paper-builder-implementation-plan.md`) | both | FR-9,10 | |
-| 3.8 | PDF question banks + RAG retrieval + code generators for Aptitude/Reasoning; IT Technical from approved bank questions, Gemini composer picks the pool (`/question-banks*`; plan of record `08-question-bank-rag-plan.md`) | both | FR-9,10 | |
+| 3.8 | Code generators for Aptitude/Reasoning; Technical (IT and Non-IT) written for the drive's role by an NVIDIA model, checked by HR in review. The PDF question banks + RAG of `08-question-bank-rag-plan.md` were built, then removed on 2026-11-13 (tables kept, unused) | both | FR-9,10 | |
 
 ## Phase 4 — Coding round
 | 4.1 | Judge0 self-host (docker compose) + client with timeouts | backend | FR-15 | |
