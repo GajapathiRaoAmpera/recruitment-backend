@@ -296,3 +296,25 @@ def test_transcript_marks_typed_answers_for_the_scorer():
     )
     assert "written question shown on screen): Reverse a list" in out
     assert "CANDIDATE (typed answer, python):\n```\nx[::-1]\n```" in out
+
+
+@sync
+async def test_sign_in_only_finds_students_moved_into_an_open_round():
+    from app.interviews import repo
+
+    seen = {}
+
+    class Session:
+        async def execute(self, stmt, params=None):
+            seen["sql"] = " ".join(str(stmt).split())
+
+            class R:
+                def mappings(self):
+                    return []
+
+            return R()
+
+    await repo.find_for_sign_in(Session(), "S1", None)
+    assert "r.status = 'active'" in seen["sql"]
+    assert "rc.round_id = r.id and rc.candidate_id = c.id" in seen["sql"]
+    assert "rc.status in ('invited', 'in_progress')" in seen["sql"]

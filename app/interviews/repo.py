@@ -20,13 +20,17 @@ def as_json(v: Any) -> Any:
 
 async def find_for_sign_in(session: AsyncSession, student_id: str, round_id: UUID | None):
     """(candidate, AI interview round) pairs for this student ID, newest candidate first.
-    Standalone on purpose: no invite, round status or earlier-round result is required."""
+    Only students HR moved into the round (a round_candidates row still open), and only while HR
+    has the round open; anyone else gets the same 401 as a wrong DOB."""
     result = await session.execute(
         text(
             "select c.id as candidate_id, c.dob, c.full_name, r.id as round_id, "
             f"{_MIN} as minutes, d.company, d.role_title "
             "from candidates c join drives d on d.id = c.drive_id "
             "join rounds r on r.drive_id = c.drive_id and r.type = 'ai_interview' "
+            "and r.status = 'active' "
+            "join round_candidates rc on rc.round_id = r.id and rc.candidate_id = c.id "
+            "and rc.status in ('invited', 'in_progress') "
             "where lower(c.student_id) = lower(:sid) "
             "and (cast(:rid as uuid) is null or r.id = :rid) "
             "order by c.created_at desc, r.position"

@@ -66,7 +66,7 @@ Standalone entry: the student opens `/interview`, signs in with Student ID + DOB
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | GET | `/interview/ping` | public | 204, no DB. Timed by the page for the network check. |
-| POST | `/interview/start` | public | `{student_id, dob, round_id?}` → `{interview_token, interview_id, status, candidate_name, role_title, company, duration_min, seconds_left}`. Same 401 for unknown ID and wrong DOB; 5 misses lock 15 min. |
+| POST | `/interview/start` | public | `{student_id, dob, round_id?}` → `{interview_token, interview_id, status, candidate_name, role_title, company, duration_min, seconds_left}`. Only students with an open `round_candidates` row in an active `ai_interview` round; anyone else gets the same 401 as an unknown ID or wrong DOB. 5 misses lock 15 min. |
 | POST | `/interview/session` | I | Starts the clock on first call; mints a token (`uses: 1`, model + config incl. system instruction locked). → `{ephemeral_token, model, expires_at, deadline_at, server_now, seconds_left, resumed, role_title, candidate_name, client_config, protocol:{system_tag, typed_prefix, closing_phrase}}`. Call again to rejoin after a reload or when a reconnect needs a fresh token. 409 when completed; 503 `AI_NOT_CONFIGURED` without `GEMINI_API_KEY`. |
 | POST | `/interview/transcript` | I | `{turns:[{role:"ai"\|"candidate", kind:"spoken"\|"typed"\|"question", text, language?, ts}], ended}`. Appends. `ended: true` completes the interview and queues scoring. |
 | POST | `/interview/frame` | I | Body: one `image/jpeg`, max 100 KB (413 `FRAME_TOO_LARGE`). Held in memory only, never stored. |

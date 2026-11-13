@@ -1,6 +1,5 @@
-"""Round 3 AI interview. Standalone for now: a student signs in with Student ID + DOB and sits the
-drive's AI interview round directly. It does not read or change attempts, invites, entry steps or
-earlier rounds, so the existing pipeline is untouched; wiring it in later only changes `start`.
+"""Round 3 AI interview. A student HR moved into the open interview round signs in with Student ID +
+DOB (repo.find_for_sign_in checks the invite). It does not read or change attempts or entry steps.
 """
 
 from datetime import timedelta

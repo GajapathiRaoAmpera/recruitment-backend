@@ -37,8 +37,9 @@ async def interview_ping():
 async def interview_start(
     body: StartIn, request: Request, session: AsyncSession = Depends(get_session)
 ):
-    """Student ID + DOB -> a token for this student's AI interview. Standalone: no invite, entry
-    steps or earlier round needed. Same 401 for unknown ID and wrong DOB; 5 misses lock 15 min."""
+    """Student ID + DOB -> a token for this student's AI interview. Only students HR moved into an
+    open interview round; no entry steps needed. Same 401 for unknown ID and wrong DOB;
+    5 misses lock 15 min."""
     meta = {
         "ip": request.client.host if request.client else None,
         "user_agent": request.headers.get("user-agent"),
