@@ -17,6 +17,13 @@ class Settings(BaseSettings):
         "storage/resumes"  # resume PDFs are saved here (relative to where you start the app)
     )
     frontend_url: str = "http://localhost:3000"  # invite emails link back here
+    judge0_url: str = "http://localhost:2358"  # self-hosted Judge0 (infra/judge0)
+    judge0_auth_token: str = ""  # sent as X-Auth-Token; same value the Judge0 stack is started with
+    # Round 1 paper builder LLMs. Keys are server only; missing => AI_PROVIDER_NOT_CONFIGURED
+    gemini_api_key: str | None = None
+    groq_api_key: str | None = None
+    gemini_model: str = "gemini-3.6-flash"  # generator (ai.google.dev/gemini-api/docs/models)
+    groq_model: str = "openai/gpt-oss-120b"  # blind verifier (console.groq.com/docs/models)
     # Round 1 paper builder LLMs. The key is server only; missing => AI_PROVIDER_NOT_CONFIGURED
     # One NVIDIA key (build.nvidia.com); model ids are listed at
     # integrate.api.nvidia.com/v1/models

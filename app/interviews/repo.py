@@ -41,6 +41,15 @@ async def find_for_sign_in(session: AsyncSession, student_id: str, round_id: UUI
 
 
 async def ensure_interview(session: AsyncSession, round_id: UUID, candidate_id: UUID) -> UUID:
+    """The interview row, created on first sign-in; also marks the student in_progress in the
+    round (as the test rounds do on start) so HR's progress shows they've begun."""
+    await session.execute(
+        text(
+            "update round_candidates set status = 'in_progress' "
+            "where round_id = :r and candidate_id = :c and status = 'invited'"
+        ),
+        {"r": round_id, "c": candidate_id},
+    )
     await session.execute(
         text(
             "insert into interviews (round_id, candidate_id) values (:r, :c) "
