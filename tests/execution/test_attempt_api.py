@@ -217,3 +217,17 @@ def test_bad_body_is_422(env, path, patch):
     r = post(path, {**BODY, **patch})
     assert r.status_code == 422 and r.json()["error"]["code"] == "VALIDATION_ERROR"
     assert env["judge0"].calls == []
+
+
+def test_an_attempt_the_deadline_already_submitted_says_expired_not_locked(env):
+    """Auto-submit at the deadline: later run / submit-code get ATTEMPT_EXPIRED (a manual
+    submit gets ATTEMPT_LOCKED)."""
+    c = TestClient(app)
+    app.dependency_overrides[student_attempt] = lambda: CTX
+    env["attempt"] = {"status": "submitted", "past_deadline": True, "auto_submitted": True}
+    for path in ("run", "submit-code"):
+        r = c.post(f"/api/v1/attempt/{path}", json=BODY)
+        assert (r.status_code, r.json()["error"]["code"]) == (409, "ATTEMPT_EXPIRED")
+    env["attempt"] = {"status": "submitted", "past_deadline": True, "auto_submitted": False}
+    r = c.post("/api/v1/attempt/run", json=BODY)
+    assert (r.status_code, r.json()["error"]["code"]) == (409, "ATTEMPT_LOCKED")

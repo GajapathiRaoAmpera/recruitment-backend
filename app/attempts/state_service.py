@@ -3,23 +3,41 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.attempts import state_repo as repo
-from app.attempts.state_schemas import AttemptOut, SubmitOut
-from app.core.config import get_settings
+from app.attempts.state_schemas import AttemptOut, CodingQuestionOut, SubmitOut
 from app.core.errors import AppError
+from app.execution.languages import LANGUAGES
 
 MAX_TAB_SWITCHES = 3
+
+
+def _title(body: str) -> str:
+    # shortcut: questions has no title column, so the first line of the body is the title;
+    # add a column when the coding editor needs a separate one.
+    first = next((line.strip() for line in body.splitlines() if line.strip()), "")
+    return first[:120]
 
 
 async def state(session: AsyncSession, attempt_id: UUID, candidate_id: UUID) -> AttemptOut:
     row = await repo.get_state(session, attempt_id, candidate_id)
     if row is None:
         raise AppError(404, "ATTEMPT_NOT_FOUND", "Attempt not found")
-    # TEMPORARY: until the question bank links questions to a test, a dev server gives an empty
-    # test the temp-seed questions. Exactly APP_ENV == "dev", never by default elsewhere.
-    if get_settings().app_env == "dev":
-        if await repo.attach_temp_questions(session, row["test_id"]):
-            await session.commit()
-    status = "expired" if row["past_deadline"] else row["status"]
+    status = row["status"]
+    if row["past_deadline"]:
+        # auto-submit: the deadline passed, so finalize now (time capped at the deadline)
+        await repo.submit(session, attempt_id)
+        await session.commit()
+        status = "expired"
+    coding = [
+        CodingQuestionOut(
+            id=q["id"],
+            title=_title(q["body"]),
+            statement=q["body"],
+            marks=q["marks"],
+            languages=[{"key": k, "name": v.name} for k, v in LANGUAGES.items()],
+            samples=q["samples"],
+        )
+        for q in await repo.coding_questions_for(session, row["test_id"])
+    ]
     return AttemptOut(
         status=status,
         deadline_at=row["deadline_at"],
@@ -27,7 +45,7 @@ async def state(session: AsyncSession, attempt_id: UUID, candidate_id: UUID) -> 
         tab_switches=row["tab_switches"],
         max_tab_switches=MAX_TAB_SWITCHES,
         remaining_sec_on_lock=row["remaining_sec_on_lock"],
-        questions=await repo.questions_for(session, row["test_id"]),
+        questions=[*await repo.questions_for(session, attempt_id), *coding],
         saved_answers=await repo.saved_answers(session, attempt_id),
     )
 

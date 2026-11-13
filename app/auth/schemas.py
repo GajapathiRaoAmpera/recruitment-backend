@@ -32,3 +32,11 @@ class StepIn(BaseModel):
     step: Literal["location", "terms", "fullscreen"]
     ok: bool
     meta: dict = {}
+
+
+class ConfirmIn(BaseModel):
+    """Per-round "confirm it's you": the sign-in ID + DOB check, logged against this round."""
+
+    round_id: UUID
+    student_id: str
+    dob: date

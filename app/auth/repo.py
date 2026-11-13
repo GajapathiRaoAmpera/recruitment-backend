@@ -72,3 +72,17 @@ async def log_step(
         ),
         {"cid": candidate_id, "rid": round_id, "step": step, "ok": ok, "meta": json.dumps(meta)},
     )
+
+
+async def latest_steps(
+    session: AsyncSession, candidate_id: UUID, round_id: UUID
+) -> dict[str, bool]:
+    """Newest log per step for this candidate + round (a refreshed page shows real progress)."""
+    result = await session.execute(
+        text(
+            "select distinct on (step) step, ok from verification_logs "
+            "where candidate_id = :c and round_id = :r order by step, created_at desc"
+        ),
+        {"c": candidate_id, "r": round_id},
+    )
+    return {r["step"]: r["ok"] for r in result.mappings()}

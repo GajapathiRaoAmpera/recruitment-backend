@@ -1,3 +1,4 @@
+import json
 from uuid import UUID
 
 from sqlalchemy import RowMapping, text
@@ -26,13 +27,14 @@ async def missing_steps(session: AsyncSession, candidate_id: UUID, round_id: UUI
     result = await session.execute(
         text(
             "select distinct on (step) step, ok from verification_logs "
-            "where candidate_id = :c and round_id = :r and step in ('location', 'terms') "
+            "where candidate_id = :c and round_id = :r "
+            "and step in ('id_dob', 'location', 'terms', 'fullscreen') "
             "order by step, created_at desc"
         ),
         {"c": candidate_id, "r": round_id},
     )
     good = {r["step"] for r in result.mappings() if r["ok"]}
-    return [s for s in ("location", "terms") if s not in good]
+    return [s for s in ("id_dob", "location", "terms", "fullscreen") if s not in good]
 
 
 async def ensure_test(session: AsyncSession, round_id: UUID, minutes: float | None) -> RowMapping:
@@ -91,3 +93,44 @@ async def start_attempt(
         {"t": test_id, "c": candidate_id},
     )
     return result.scalar_one()
+
+
+async def has_questions(session: AsyncSession, attempt_id: UUID) -> bool:
+    result = await session.execute(
+        text("select 1 from attempt_questions where attempt_id = :a limit 1"), {"a": attempt_id}
+    )
+    return result.first() is not None
+
+
+async def sent_paper(session: AsyncSession, round_id: UUID, candidate_id: UUID):
+    """The newest accepted paper of the round's drive that HR sent to this candidate."""
+    result = await session.execute(
+        text(
+            "select d.drive_ref, d.settings, d.pool from rounds r "
+            "join paper_drafts d on d.drive_ref = cast(r.drive_id as text) "
+            "join paper_issues pi on pi.draft_id = d.id and pi.candidate_ref = :c "
+            "where r.id = :r and d.status = 'accepted' and d.persisted_at is not null "
+            "order by d.created_at desc limit 1"
+        ),
+        {"r": round_id, "c": str(candidate_id)},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        return None
+    out = dict(row)
+    for key in ("settings", "pool"):  # jsonb may arrive as text; drive_ref is a plain string
+        if isinstance(out[key], str):
+            out[key] = json.loads(out[key])
+    return out
+
+
+async def link_questions(session: AsyncSession, attempt_id: UUID, rows: list[dict]) -> None:
+    """rows: [{q: question id, p: position, o: option order}], this student's own paper."""
+    await session.execute(
+        text(
+            "insert into attempt_questions (attempt_id, question_id, position, option_order) "
+            "select :a, r.q, r.p, r.o from jsonb_to_recordset(cast(:rows as jsonb)) "
+            "as r(q uuid, p int, o int[]) on conflict do nothing"
+        ),
+        {"a": attempt_id, "rows": json.dumps(rows)},
+    )

@@ -32,8 +32,10 @@ async def _check_can_run(session: AsyncSession, ctx: AttemptContext, question_id
     attempt = await repo.get_attempt(session, ctx.attempt_id)
     if attempt is None:
         raise AppError(404, "ATTEMPT_NOT_FOUND", "Attempt not found")
-    if attempt["status"] == "expired" or (
-        attempt["status"] == "in_progress" and attempt["past_deadline"]
+    if (
+        attempt["status"] == "expired"
+        or attempt.get("auto_submitted")  # the deadline already submitted it
+        or (attempt["status"] == "in_progress" and attempt["past_deadline"])
     ):
         raise AppError(409, "ATTEMPT_EXPIRED", "Time is up for this test")
     if attempt["status"] != "in_progress":

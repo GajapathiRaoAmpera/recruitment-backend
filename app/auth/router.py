@@ -1,8 +1,10 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import entry, repo
-from app.auth.schemas import StaffUser, StepIn, VerifyIn, VerifyOut
+from app.auth.schemas import ConfirmIn, StaffUser, StepIn, VerifyIn, VerifyOut
 from app.auth.security import require_role
 from app.core.db import get_session
 from app.core.errors import AppError
@@ -36,4 +38,31 @@ async def entry_step(
         raise AppError(403, "NOT_INVITED", "You are not invited to this round")
     await repo.log_step(session, who.candidate_id, body.round_id, body.step, body.ok, body.meta)
     await session.commit()
+    return Response(status_code=204)
+
+
+@router.get("/entry/steps")
+async def entry_steps(
+    round_id: UUID,
+    who: entry.Entry = Depends(entry.current_entry),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, bool]:
+    """Latest result per step for this round, so a refresh keeps the student's progress."""
+    if await repo.get_invite_target(session, who.candidate_id, round_id) is None:
+        raise AppError(403, "NOT_INVITED", "You are not invited to this round")
+    return await repo.latest_steps(session, who.candidate_id, round_id)
+
+
+@router.post("/entry/confirm", status_code=204)
+async def entry_confirm(
+    body: ConfirmIn,
+    request: Request,
+    who: entry.Entry = Depends(entry.current_entry),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    meta = {
+        "ip": request.client.host if request.client else None,
+        "user_agent": request.headers.get("user-agent"),
+    }
+    await entry.confirm(session, who, body, meta)
     return Response(status_code=204)

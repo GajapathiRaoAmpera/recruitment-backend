@@ -4,45 +4,6 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.attempts.temp_questions import QUESTIONS, TAG
-
-
-async def attach_temp_questions(session: AsyncSession, test_id: UUID) -> int:
-    """Give a question-less test the temporary questions. 0 = the test already has questions."""
-    has = await session.execute(
-        text("select 1 from test_questions where test_id = :t limit 1"), {"t": test_id}
-    )
-    if has.first() is not None:
-        return 0
-    for position, q in enumerate(QUESTIONS):
-        await session.execute(
-            text(
-                "insert into questions (id, kind, body, options, answer, tags, difficulty, "
-                "marks, approved) values (:id, 'mcq', :body, cast(:options as jsonb), "
-                "cast(:answer as jsonb), cast(:tags as text[]), 'easy', 1, true) "
-                "on conflict (id) do nothing"
-            ),
-            {
-                "id": q["id"],
-                "body": q["body"],
-                "options": json.dumps(q["options"]),
-                "answer": json.dumps(q["answer"]),
-                "tags": [TAG],
-            },
-        )
-        await session.execute(
-            text(
-                "insert into test_questions (test_id, question_id, position) "
-                "values (:t, :q, :p) on conflict do nothing"
-            ),
-            {"t": test_id, "q": q["id"], "p": position},
-        )
-    await session.execute(
-        text("update tests set question_count = :n where id = :t"),
-        {"n": len(QUESTIONS), "t": test_id},
-    )
-    return len(QUESTIONS)
-
 
 async def get_state(session: AsyncSession, attempt_id: UUID, candidate_id: UUID):
     result = await session.execute(
@@ -57,27 +18,60 @@ async def get_state(session: AsyncSession, attempt_id: UUID, candidate_id: UUID)
     return result.mappings().one_or_none()
 
 
-async def questions_for(session: AsyncSession, test_id: UUID) -> list[dict]:
-    """Question text and options only. `answer` is never selected here."""
+async def questions_for(session: AsyncSession, attempt_id: UUID) -> list[dict]:
+    """This student's questions in their order, options in their order. Never `answer`."""
     result = await session.execute(
         text(
-            "select q.id, q.body, q.options, q.marks from test_questions tq "
-            "join questions q on q.id = tq.question_id "
-            "where tq.test_id = :t and q.kind = 'mcq' order by tq.position"
+            "select q.id, q.body, q.marks, (select jsonb_agg(q.options -> u.o order by u.ord) "
+            "from unnest(aq.option_order) with ordinality as u(o, ord)) as options "
+            "from attempt_questions aq join questions q on q.id = aq.question_id "
+            "where aq.attempt_id = :a and q.kind = 'mcq' order by aq.position"
         ),
-        {"t": test_id},
+        {"a": attempt_id},
     )
     return [dict(r) for r in result.mappings()]
 
 
-async def saved_answers(session: AsyncSession, attempt_id: UUID) -> dict[str, int]:
+async def coding_questions_for(session: AsyncSession, test_id: UUID) -> list[dict]:
+    """The test's coding questions with their SAMPLE cases only (max 3). Hidden cases
+    (`is_sample = false`) are never selected here."""
     result = await session.execute(
-        text("select question_id, response from answers where attempt_id = :a"),
+        text(
+            "select q.id, q.body, q.marks from test_questions tq "
+            "join questions q on q.id = tq.question_id "
+            "where tq.test_id = :t and q.kind = 'coding' order by tq.position"
+        ),
+        {"t": test_id},
+    )
+    questions = [dict(r) | {"samples": []} for r in result.mappings()]
+    if questions:
+        cases = await session.execute(
+            text(
+                "select question_id, input, expected from test_cases "
+                "where question_id = any(cast(:ids as uuid[])) and is_sample "
+                "order by question_id, position"
+            ),
+            {"ids": [q["id"] for q in questions]},
+        )
+        by_q = {q["id"]: q["samples"] for q in questions}
+        for c in cases.mappings():
+            if len(by_q[c["question_id"]]) < 3:
+                by_q[c["question_id"]].append({"input": c["input"], "expected": c["expected"]})
+    return questions
+
+
+async def saved_answers(session: AsyncSession, attempt_id: UUID) -> dict[str, int | dict]:
+    result = await session.execute(
+        text("select question_id, response, code, language from answers where attempt_id = :a"),
         {"a": attempt_id},
     )
-    return {
-        str(r["question_id"]): r["response"] for r in result.mappings() if r["response"] is not None
-    }
+    saved: dict[str, int | dict] = {}
+    for r in result.mappings():
+        if r["code"] is not None:
+            saved[str(r["question_id"])] = {"code": r["code"], "language": r["language"]}
+        elif r["response"] is not None:
+            saved[str(r["question_id"])] = r["response"]
+    return saved
 
 
 async def save_answer(
@@ -86,9 +80,10 @@ async def save_answer(
     """'ok', or why not: 'no_question', 'bad_option', 'closed' (locked/submitted), 'expired'."""
     row = await session.execute(
         text(
-            "select q.options, a.status, (a.deadline_at < now()) as past from attempts a "
-            "join test_questions tq on tq.test_id = a.test_id "
-            "join questions q on q.id = tq.question_id and q.kind = 'mcq' "
+            "select cardinality(aq.option_order) as n, a.status, (a.deadline_at < now()) as past, "
+            "(a.status = 'submitted' and a.submitted_at >= a.deadline_at) as auto "
+            "from attempts a join attempt_questions aq on aq.attempt_id = a.id "
+            "join questions q on q.id = aq.question_id and q.kind = 'mcq' "
             "where a.id = :a and q.id = :q"
         ),
         {"a": attempt_id, "q": question_id},
@@ -96,11 +91,13 @@ async def save_answer(
     found = row.mappings().one_or_none()
     if found is None:
         return "no_question"
+    if found["auto"]:  # the deadline submitted it, not the student
+        return "expired"
     if found["status"] != "in_progress":
         return "closed"
     if found["past"]:
         return "expired"
-    if not 0 <= response < len(found["options"] or []):
+    if not 0 <= response < found["n"]:
         return "bad_option"
     await session.execute(
         text(
@@ -133,8 +130,11 @@ async def submit(session: AsyncSession, attempt_id: UUID):
         return None
     await session.execute(
         text(
-            "update answers a set marks = case when a.response = q.answer then q.marks else 0 end "
-            "from questions q where a.attempt_id = :a and q.id = a.question_id and q.kind = 'mcq'"
+            "update answers a set marks = case when "
+            "to_jsonb(aq.option_order[(a.response #>> '{}')::int + 1]) = q.answer "
+            "then q.marks else 0 end from questions q, attempt_questions aq "
+            "where a.attempt_id = :a and q.id = a.question_id and q.kind = 'mcq' "
+            "and aq.attempt_id = a.attempt_id and aq.question_id = a.question_id"
         ),
         {"a": attempt_id},
     )

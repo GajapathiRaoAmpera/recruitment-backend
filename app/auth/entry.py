@@ -10,7 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import repo
-from app.auth.schemas import VerifyIn, VerifyOut
+from app.auth.schemas import ConfirmIn, VerifyIn, VerifyOut
 from app.auth.security import bearer
 from app.core.config import get_settings
 from app.core.db import get_session
@@ -51,8 +51,12 @@ async def verify(session: AsyncSession, body: VerifyIn, meta: dict) -> VerifyOut
     for cid in first:
         if await repo.recent_failures(session, cid) >= MAX_FAILURES:
             raise AppError(429, "TOO_MANY_ATTEMPTS", "Too many attempts. Try again in 15 minutes")
-    for cid, r in first.items():
-        await repo.log_step(session, cid, r["round_id"], "id_dob", r["dob"] == body.dob, meta)
+    for r in rows:
+        ok = r["dob"] == body.dob
+        # a right DOB is logged for every round (HR stats are per round); a wrong one once per
+        # candidate so a miss counts once toward the lockout, not once per round
+        if ok or first[r["candidate_id"]] is r:
+            await repo.log_step(session, r["candidate_id"], r["round_id"], "id_dob", ok, meta)
     await session.commit()  # keep the logs even when we raise below
     # shortcut: same ID+DOB in two drives picks the newest candidate, upgrade if that happens
     mine = [r for r in rows if r["dob"] == body.dob]
@@ -80,6 +84,21 @@ async def verify(session: AsyncSession, body: VerifyIn, meta: dict) -> VerifyOut
             if r["candidate_id"] == cid
         ],
     )
+
+
+async def confirm(session: AsyncSession, who: Entry, body: ConfirmIn, meta: dict) -> None:
+    """Re-check ID + DOB for one round. Wrong tries count toward the same lockout as sign-in."""
+    target = await repo.get_invite_target(session, who.candidate_id, body.round_id)
+    if target is None:
+        raise AppError(403, "NOT_INVITED", "You are not invited to this round")
+    if await repo.recent_failures(session, who.candidate_id) >= MAX_FAILURES:
+        raise AppError(429, "TOO_MANY_ATTEMPTS", "Too many attempts. Try again in 15 minutes")
+    same_id = target["student_id"].lower() == body.student_id.strip().lower()
+    ok = same_id and target["dob"] == body.dob
+    await repo.log_step(session, who.candidate_id, body.round_id, "id_dob", ok, meta)
+    await session.commit()  # keep the log even when we raise below
+    if not ok:
+        raise AppError(401, "ENTRY_MISMATCH", "Student ID or date of birth does not match")
 
 
 async def current_entry(
