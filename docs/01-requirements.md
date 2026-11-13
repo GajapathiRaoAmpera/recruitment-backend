@@ -42,7 +42,7 @@ IDs are referenced from the plan, API contracts and tests.
 
 ### AI interview
 - **FR-18** HR triggers interview emails.
-- **FR-19** Interview runs on Gemini Live API, ends with a thank-you.
+- **FR-19** Interview runs on Gemini Live API (voice, 35–45 minutes, set per round; default 40), ends with a thank-you. HR sees live camera stills during the interview; they are not stored.
 - **FR-20** Transcript saved; AI scores generated; HR reads both and adds notes.
 
 ### Further rounds & decision
@@ -66,7 +66,7 @@ IDs are referenced from the plan, API contracts and tests.
 | Scalability | One campus batch concurrently (assume **300** until decided). |
 | Auditability | Every verification step, violation and HR action is logged with actor + timestamp. |
 | Constraints | React + JavaScript frontend; Python REST API; Supabase (Postgres, Auth, Storage); Judge0; Gemini free tier; resume parsing must not use AI; web only. |
-| Out of scope | Payments, offer letters, onboarding, mobile app, camera/face proctoring. |
+| Out of scope | Payments, offer letters, onboarding, mobile app, camera recording, face matching or automatic camera proctoring (live camera stills for HR during the AI interview are in scope, not stored). |
 
 ## Acceptance criteria (definition of done per area)
 | ID | Given / When / Then |
