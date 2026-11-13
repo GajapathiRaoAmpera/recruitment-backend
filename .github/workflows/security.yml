@@ -3,9 +3,9 @@ name: Security
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, pre-prod]
   push:
-    branches: [main]
+    branches: [main, pre-prod]
   schedule:
     - cron: "0 3 * * 1"
 
