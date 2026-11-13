@@ -60,3 +60,46 @@ class AdvanceOut(BaseModel):
     absent: int
     next_round_id: UUID | None
     invited: list[InvitedOut]  # for a reminder email later (no SMTP yet)
+
+
+# ---- HR-decided rounds (ai_interview, final): the AI recommends, HR decides (FR-20, FR-22)
+
+
+class DecisionRow(BaseModel):
+    candidate_id: UUID
+    student_id: str
+    name: str
+    status: str  # round_candidates.status
+    interview_id: UUID | None
+    interview_status: str | None  # scheduled | live | completed | failed, None = never signed in
+    scoring: Literal["pending", "done", "error"] | None
+    ai_average: float | None  # 1-5 AI recommendation, never a decision
+
+
+class DecisionsOut(BaseModel):
+    round_id: UUID
+    round_type: str
+    round_status: str
+    candidates: list[DecisionRow]
+
+
+class DecisionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: UUID
+    decision: Literal["pass", "fail"]  # final round: pass = selected, fail = rejected
+
+
+class DecideIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decisions: list[DecisionIn] = Field(max_length=5000)  # one per student in the round
+
+
+class DecideOut(BaseModel):
+    round_id: UUID
+    passed: int
+    failed: int
+    next_round_id: UUID | None
+    invited: list[InvitedOut]
+    drive_closed: bool  # True when this was the last round

@@ -7,11 +7,21 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.advance import ranking, repo
-from app.advance.schemas import AdvanceIn, AdvanceOut, InvitedOut, RankingOut
+from app.advance.schemas import (
+    AdvanceIn,
+    AdvanceOut,
+    DecideIn,
+    DecideOut,
+    DecisionRow,
+    DecisionsOut,
+    InvitedOut,
+    RankingOut,
+)
 from app.attempts import state_repo
 from app.auth.schemas import StaffUser
 from app.core.audit import audit
 from app.core.errors import AppError
+from app.interviews.service import _scoring as ai_scoring  # same average HR sees on /interviews
 
 TEST_ROUNDS = ("aptitude", "coding", "technical")
 
@@ -146,6 +156,128 @@ async def advance(
             "finalized_locked": locked_ids,
             "next_round_id": out.next_round_id,
             "invited": [i.candidate_id for i in invited],
+        },
+    )
+    await session.commit()
+    return out
+
+
+# ---- HR-decided rounds: the AI interview recommends a score, HR passes or fails each student.
+
+DECISION_ROUNDS = {"ai_interview": ("passed", "failed"), "final": ("selected", "rejected")}
+
+
+def _check_decision_round(rnd) -> None:
+    if rnd is None:
+        raise AppError(404, "ROUND_NOT_FOUND", "Round not found")
+    if rnd["type"] not in DECISION_ROUNDS:
+        raise AppError(409, "ROUND_NOT_HR_DECIDED", "Test rounds are advanced on marks")
+
+
+def _decision_row(r) -> DecisionRow:
+    scoring, average = ai_scoring(r["ai_scores"])
+    return DecisionRow(
+        **{k: r[k] for k in DecisionRow.model_fields if k in r},
+        scoring=scoring,
+        ai_average=average,
+    )
+
+
+async def decisions(session: AsyncSession, user: StaffUser, round_id: UUID) -> DecisionsOut:
+    rnd = await repo.get_round(session, round_id, _owner(user))
+    _check_decision_round(rnd)
+    rows = await repo.decision_rows(session, round_id)
+    return DecisionsOut(
+        round_id=round_id,
+        round_type=rnd["type"],
+        round_status=rnd["status"],
+        candidates=[_decision_row(r) for r in rows],
+    )
+
+
+async def decide(
+    session: AsyncSession, user: StaffUser, round_id: UUID, body: DecideIn
+) -> DecideOut:
+    """One transaction: HR's pass/fail for every student, close the round, invite the passed
+    into the next round, or close the drive when there is none."""
+    rnd = await repo.get_round(session, round_id, _owner(user), lock=True)
+    _check_decision_round(rnd)
+    if rnd["status"] == "completed":
+        raise AppError(409, "ROUND_ALREADY_DECIDED", "This round was already decided")
+    if rnd["status"] != "active":
+        raise AppError(409, "ROUND_NOT_ACTIVE", "Only an open round can be decided")
+
+    picks = {d.candidate_id: d.decision for d in body.decisions}
+    if len(picks) != len(body.decisions):
+        raise AppError(422, "DUPLICATE_DECISION", "Each student can be decided only once")
+    rows = await repo.decision_rows(session, round_id)
+    in_round = {r["candidate_id"] for r in rows}
+    missing, unknown = in_round - picks.keys(), picks.keys() - in_round
+    if missing or unknown:
+        raise AppError(
+            422,
+            "DECISIONS_INCOMPLETE",
+            "Decide every student in this round, and only them",
+            {"missing": sorted(map(str, missing)), "unknown": sorted(map(str, unknown))},
+        )
+    live = [r for r in rows if r["interview_status"] == "live"]
+    if live:
+        raise AppError(
+            409,
+            "INTERVIEW_LIVE",
+            "Some students are still in their interview",
+            {"candidates": [str(r["candidate_id"]) for r in live]},
+        )
+
+    yes, no = DECISION_ROUNDS[rnd["type"]]
+    results, passed = [], []
+    for r in rows:
+        ok = picks[r["candidate_id"]] == "pass"
+        results.append(
+            {
+                "c": str(r["candidate_id"]),
+                "s": yes if ok else no,
+                "score": ai_scoring(r["ai_scores"])[1],  # the AI's advice, kept for the record
+                "rank": None,
+            }
+        )
+        if ok:
+            passed.append(r)
+    await repo.save_results(session, round_id, results)
+    await repo.complete_round(session, round_id, rnd["threshold"])
+
+    nxt = await repo.next_round(session, rnd["drive_id"], rnd["position"])
+    invited: list[InvitedOut] = []
+    if nxt is not None:
+        await repo.open_round(session, nxt["id"])
+        new_ids = set(await repo.invite(session, nxt["id"], [r["candidate_id"] for r in passed]))
+        invited = [
+            InvitedOut(candidate_id=r["candidate_id"], student_id=r["student_id"], name=r["name"])
+            for r in passed
+            if r["candidate_id"] in new_ids
+        ]
+    else:
+        await repo.close_drive(session, rnd["drive_id"])
+
+    out = DecideOut(
+        round_id=round_id,
+        passed=len(passed),
+        failed=len(rows) - len(passed),
+        next_round_id=nxt["id"] if nxt is not None else None,
+        invited=invited,
+        drive_closed=nxt is None,
+    )
+    await audit(
+        session,
+        user.id,
+        "round.decide",
+        "round",
+        round_id,
+        {
+            "passed": [str(r["candidate_id"]) for r in passed],
+            "failed": out.failed,
+            "next_round_id": out.next_round_id,
+            "drive_closed": out.drive_closed,
         },
     )
     await session.commit()

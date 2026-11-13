@@ -113,6 +113,30 @@ async def open_round(session: AsyncSession, round_id: UUID) -> None:
     )
 
 
+# HR-decided rounds (interview, final): every student in the round with their AI interview,
+# the AI's scores being a recommendation only. A candidate belongs to one drive, so their
+# newest interview is this drive's.
+_DECISION_ROWS = (
+    "select c.id as candidate_id, c.student_id, c.full_name as name, "
+    "cast(rc.status as text) as status, i.id as interview_id, "
+    "cast(i.status as text) as interview_status, i.ai_scores "
+    "from round_candidates rc join candidates c on c.id = rc.candidate_id "
+    "left join lateral (select i.id, i.status, i.ai_scores from interviews i "
+    "where i.candidate_id = c.id order by i.started_at desc nulls last limit 1) i on true "
+    "where rc.round_id = :r order by c.full_name, c.student_id"
+)
+
+
+async def decision_rows(session: AsyncSession, round_id: UUID) -> list[RowMapping]:
+    return list((await session.execute(text(_DECISION_ROWS), {"r": round_id})).mappings())
+
+
+async def close_drive(session: AsyncSession, drive_id: UUID) -> None:
+    await session.execute(
+        text("update drives set status = 'closed' where id = :d"), {"d": drive_id}
+    )
+
+
 async def invite(session: AsyncSession, round_id: UUID, candidate_ids: list[UUID]) -> list[UUID]:
     """Insert as invited; a candidate already in that round is left as is. Returns the new ones."""
     if not candidate_ids:
