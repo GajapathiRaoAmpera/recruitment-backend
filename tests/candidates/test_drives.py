@@ -158,3 +158,24 @@ def test_create_rejects_bad_rounds(rounds):
     c, _ = client([])
     base = {"company": "C", "campus": "K", "role_title": "R", "jd_text": "J"}
     assert c.post("/api/v1/drives", json={**base, "rounds": rounds}).status_code == 422
+
+
+def test_list_includes_rounds_and_current_round():
+    rid = [str(uuid.uuid4()) for _ in range(3)]
+    rounds = (
+        f'[{{"id":"{rid[0]}","type":"shortlist","status":"completed"}},'
+        f'{{"id":"{rid[1]}","type":"aptitude","status":"active"}},'
+        f'{{"id":"{rid[2]}","type":"coding","status":"pending"}}]'
+    )
+    c, _ = client([{**ROW, "rounds": rounds}])  # JSON string, as asyncpg returns it
+    d = c.get("/api/v1/drives").json()[0]
+    assert [r["type"] for r in d["rounds"]] == ["shortlist", "aptitude", "coding"]
+    assert d["current_round"]["type"] == "aptitude"
+
+
+def test_list_without_active_round_and_filters_passed():
+    c, s = client([{**ROW, "rounds": []}])
+    d = c.get("/api/v1/drives?status=active&limit=5").json()[0]
+    assert d["rounds"] == [] and d["current_round"] is None
+    assert s.params["s"] == "active" and s.params["lim"] == 5
+    assert c.get("/api/v1/drives?status=bogus").status_code == 422
