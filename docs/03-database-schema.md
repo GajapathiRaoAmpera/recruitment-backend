@@ -316,6 +316,7 @@ end $$;
 - Ranking: `order by marks desc, time_taken_sec asc`.
 - `questions.answer` and `test_cases where is_sample = false` are only selected by HR/scoring code.
 - `questions.explanation` and `paper_drafts.pool` (answers + why) are only selected by HR/Super Admin code.
+- `questions.reference_solution` / `reference_language` are only selected by HR/Super Admin code (`app/execution/coding_questions/repo.py`); student queries (`GET /attempt`, run/submit) name their columns and never select them.
 - `paper_drafts.pool` changes only while `status = 'draft'`; `accepted` is reached only from `draft` and freezes it.
 - A pool question is written to `questions` once (same id, `on conflict (id) do nothing`), on the first send; `persisted_at` records it.
 - `paper_issues` rows are never rewritten: sending again to the same candidate is a no-op.
@@ -328,3 +329,6 @@ end $$;
 
 ## 0006_answer_code_drafts
 `answers.draft_code text`, `answers.draft_language text`, `answers.draft_saved_at timestamptz` (all nullable): the coding editor's autosave (`PUT /attempt/code-drafts/{question_id}`). `answers.code` stays the last submitted code, which matches `passed_cases` and `marks`; saving a draft never changes those columns or `updated_at`.
+
+## 0007_question_reference_solution
+`questions.reference_solution text`, `questions.reference_language text` (both nullable, check `questions_reference_pair`: set together or both null). Written by `POST /questions/generate`: the program whose Judge0 stdout became each test case's `expected` (`reference_language` is `'python'`). Such questions are inserted `approved = false`, `ai_generated = true`. Manual coding questions leave both null. HR/Super Admin only.

@@ -127,7 +127,42 @@ class CodingQuestionOut(BaseModel):
     approved: bool
     created_by: UUID | None
     created_at: datetime
+    # AI questions: the program whose Judge0 stdout became `expected`. Null for manual ones.
+    reference_solution: str | None = None
+    reference_language: str | None = None
     test_cases: list[CaseOut]
+
+
+class GenerateIn(BaseModel):
+    """POST /questions/generate: AI drafts, saved with approved = false."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    difficulty: Difficulty
+    topic: str | None = Field(default=None, max_length=200)
+    tags: list[str] = []
+    marks: Decimal = Field(default=Decimal(1), gt=0, le=999, decimal_places=2)
+    count: int = Field(default=1, ge=1, le=3)
+
+    @field_validator("topic")
+    @classmethod
+    def _topic(cls, v: str | None) -> str | None:
+        return (v.strip() or None) if v is not None else None
+
+    @field_validator("tags")
+    @classmethod
+    def _tags(cls, v: list[str]) -> list[str]:
+        return _clean_tags(v)
+
+
+class GenerateFailure(BaseModel):
+    index: int  # 0-based position in the request's count
+    reason: str
+
+
+class GenerateOut(BaseModel):
+    created: list[CodingQuestionOut]
+    failed: list[GenerateFailure]
 
 
 class CodingQuestionSummary(BaseModel):

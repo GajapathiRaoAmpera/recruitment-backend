@@ -7,13 +7,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.schemas import StaffUser
 from app.core.audit import audit
 from app.core.errors import AppError
+from app.execution.coding_questions import generate as gen
 from app.execution.coding_questions import repo
 from app.execution.coding_questions.schemas import (
     CodingQuestionIn,
     CodingQuestionOut,
     CodingQuestionPatch,
     CodingQuestionSummary,
+    GenerateFailure,
+    GenerateIn,
+    GenerateOut,
 )
+from app.execution.judge0 import Judge0Client
+from app.papers.agents import LlmClient
 
 
 def _owner(user: StaffUser) -> UUID | None:
@@ -49,6 +55,65 @@ async def create(session: AsyncSession, user: StaffUser, body: CodingQuestionIn)
     )
     await session.commit()
     return await _out(session, row)
+
+
+async def generate(
+    session: AsyncSession,
+    user: StaffUser,
+    body: GenerateIn,
+    llm: LlmClient,
+    judge0: Judge0Client,
+) -> GenerateOut:
+    """AI drafts (approved = false). Each good question is saved in its own transaction with its
+    audit row; failed ones are reported, not saved."""
+    avoid = await repo.recent_titles(session, user.id, gen.MAX_AVOID)
+    await session.rollback()  # read only; frees the DB connection during the slow AI + Judge0 work
+    drafts, failures = await gen.generate_many(
+        llm, judge0, difficulty=body.difficulty, topic=body.topic, count=body.count, avoid=avoid
+    )
+    if not drafts:
+        provider = next((f.error for f in failures if f.error is not None), None)
+        if provider is not None and all(f.error is not None for f in failures):
+            raise provider  # the AI provider itself failed (502 / 429), not its output
+        raise AppError(
+            502,
+            "AI_BAD_OUTPUT",
+            "The AI could not produce a usable question. Try again or change the topic.",
+            {"failed": [{"index": f.index, "reason": f.reason} for f in failures]},
+        )
+    created = []
+    for d in drafts:
+        row = await repo.insert_question(
+            session,
+            user.id,
+            d.question.body,
+            body.difficulty,
+            body.tags,
+            body.marks,
+            reference_solution=d.question.reference_solution,
+            reference_language=gen.REFERENCE_LANGUAGE,
+        )
+        await repo.insert_cases(session, row["id"], d.cases)
+        await audit(  # counts only, like question.create
+            session,
+            user.id,
+            "question.generate",
+            "questions",
+            row["id"],
+            {
+                "kind": "coding",
+                "difficulty": body.difficulty,
+                "test_cases": len(d.cases),
+                "reference_language": gen.REFERENCE_LANGUAGE,
+                "model": getattr(llm, "model", None),
+            },
+        )
+        await session.commit()
+        created.append(await _out(session, row))
+    return GenerateOut(
+        created=created,
+        failed=[GenerateFailure(index=f.index, reason=f.reason) for f in failures],
+    )
 
 
 async def get(session: AsyncSession, user: StaffUser, question_id: UUID) -> CodingQuestionOut:

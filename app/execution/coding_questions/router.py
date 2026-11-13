@@ -8,12 +8,18 @@ from app.auth.security import require_role
 from app.core.db import get_session
 from app.core.errors import AppError
 from app.execution.coding_questions import service
+from app.execution.coding_questions.generate import generation_llm
 from app.execution.coding_questions.schemas import (
     CodingQuestionIn,
     CodingQuestionOut,
     CodingQuestionPatch,
     CodingQuestionSummary,
+    GenerateIn,
+    GenerateOut,
 )
+from app.execution.deps import judge0_client
+from app.execution.judge0 import Judge0Client
+from app.papers.agents import LlmClient
 
 # Only the coding part of /questions lives here. MCQ questions are the question-bank /
 # paper-builder code's job: they arrive through /question-banks and /papers.
@@ -28,6 +34,19 @@ async def create_question(
     session: AsyncSession = Depends(get_session),
 ):
     return await service.create(session, user, body)
+
+
+@router.post("/generate", response_model=GenerateOut, status_code=201)
+async def generate_questions(
+    body: GenerateIn,
+    user: StaffUser = Depends(hr),
+    session: AsyncSession = Depends(get_session),
+    llm: LlmClient = Depends(generation_llm),  # after `user`: no key check before the login
+    judge0: Judge0Client = Depends(judge0_client),
+):
+    """AI drafts of coding questions; saved approved = false for HR to review (synchronous:
+    about 11 s per question measured, count 1-3, 150 s budget)."""
+    return await service.generate(session, user, body, llm, judge0)
 
 
 @router.get("", response_model=list[CodingQuestionSummary])

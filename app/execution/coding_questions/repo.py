@@ -5,7 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.execution.coding_questions.schemas import CaseIn
 
-_COLS = "id, body, difficulty, tags, marks, approved, created_by, created_at"
+# HR / Super Admin only: reference_solution must never reach a student-facing query
+_COLS = (
+    "id, body, difficulty, tags, marks, approved, created_by, created_at, "
+    "reference_solution, reference_language"
+)
+_LIST_COLS = "id, body, difficulty, tags, marks, approved, created_by, created_at"
 
 
 async def insert_question(
@@ -15,17 +20,46 @@ async def insert_question(
     difficulty: str,
     tags: list[str],
     marks,
+    *,
+    reference_solution: str | None = None,
+    reference_language: str | None = None,
 ) -> RowMapping:
-    # manual authoring: HR wrote it, so it is approved from the start
+    """Manual authoring (no reference): HR wrote it, so it is approved from the start.
+    AI drafts (with a reference solution) start unapproved and ai_generated."""
+    ai = reference_solution is not None
     rows = await session.execute(
         text(
-            "insert into questions (kind, body, tags, difficulty, marks, approved, created_by) "
+            "insert into questions (kind, body, tags, difficulty, marks, approved, ai_generated, "
+            "created_by, reference_solution, reference_language) "
             "values ('coding', :body, cast(:tags as text[]), cast(:difficulty as difficulty), "
-            f":marks, true, :owner) returning {_COLS}"
+            ":marks, :approved, :ai, :owner, :ref, :ref_lang) "
+            f"returning {_COLS}"
         ),
-        {"body": body, "tags": tags, "difficulty": difficulty, "marks": marks, "owner": owner_id},
+        {
+            "body": body,
+            "tags": tags,
+            "difficulty": difficulty,
+            "marks": marks,
+            "approved": not ai,
+            "ai": ai,
+            "owner": owner_id,
+            "ref": reference_solution,
+            "ref_lang": reference_language,
+        },
     )
     return rows.mappings().one()
+
+
+async def recent_titles(session: AsyncSession, owner_id: UUID, limit: int) -> list[str]:
+    """First lines of this user's newest coding questions (the "do not repeat" list)."""
+    rows = await session.execute(
+        text(
+            "select split_part(body, E'\\n', 1) from questions "
+            "where kind = 'coding' and created_by = :owner order by created_at desc limit :limit"
+        ),
+        {"owner": owner_id, "limit": limit},
+    )
+    return [t for (t,) in rows if t.strip()]
 
 
 async def insert_cases(session: AsyncSession, question_id: UUID, cases: list[CaseIn]) -> None:
@@ -84,7 +118,7 @@ async def list_questions(
 ) -> list[RowMapping]:
     rows = await session.execute(
         text(
-            f"select {_COLS} from questions where kind = 'coding' "
+            f"select {_LIST_COLS} from questions where kind = 'coding' "
             "and (cast(:owner as uuid) is null or created_by = :owner) "
             "and (cast(:difficulty as text) is null "
             "or difficulty = cast(:difficulty as difficulty)) "
