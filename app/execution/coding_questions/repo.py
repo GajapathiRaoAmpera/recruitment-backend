@@ -11,7 +11,7 @@ _COLS = (
     "id, body, difficulty, tags, marks, approved, created_by, created_at, "
     "reference_solution, reference_language, mode, signature, sql_schema, sql_order_matters"
 )
-_LIST_COLS = "id, body, difficulty, tags, marks, approved, created_by, created_at"
+_LIST_COLS = "id, body, difficulty, tags, marks, approved, created_by, created_at, mode"
 
 
 async def insert_question(

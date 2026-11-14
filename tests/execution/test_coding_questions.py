@@ -225,6 +225,17 @@ def test_list_is_scoped_to_owner_and_has_no_cases(db):
     assert len(only_adv) == 1
 
 
+def test_list_rows_carry_each_questions_mode(db):
+    ids = [create(HR).json()["id"] for _ in range(3)]
+    for qid, mode in zip(ids[1:], ["function", "sql"], strict=True):
+        db["questions"][uuid.UUID(qid)]["mode"] = mode  # stored as generate / function create do
+    rows = as_user(HR).get("/api/v1/questions").json()
+    assert {r["id"]: r["mode"] for r in rows} == dict(
+        zip(ids, ["stdin", "function", "sql"], strict=True)
+    )
+    assert all("test_cases" not in r and "schema" not in r for r in rows)
+
+
 def test_list_rejects_other_kinds_and_bad_difficulty(db):
     assert as_user(HR).get("/api/v1/questions?kind=mcq").json()["error"]["code"] == (
         "UNSUPPORTED_KIND"

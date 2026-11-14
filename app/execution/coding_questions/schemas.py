@@ -230,3 +230,4 @@ class CodingQuestionSummary(BaseModel):
     marks: Decimal
     approved: bool
     created_at: datetime
+    mode: QuestionMode = "stdin"  # lets the question bank label SQL / function questions
