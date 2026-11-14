@@ -16,6 +16,7 @@ Pure functions, no I/O. `stdout` of a hidden case must never reach a student: ca
 build responses for hidden cases use counts only (see CLAUDE.md in this folder).
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -76,8 +77,15 @@ def _was_memory_kill(language: str, r: RunResult) -> bool:
     )
 
 
-def judge(language: str, result: RunResult, expected_output: str) -> CaseJudgement:
-    """Verdict for one test case. `language` is our key (it carries the memory limit)."""
+def judge(
+    language: str,
+    result: RunResult,
+    expected_output: str,
+    *,
+    match: Callable[[str, str], bool] = outputs_match,
+) -> CaseJudgement:
+    """Verdict for one test case. `language` is our key (it carries the memory limit).
+    `match` compares a clean run's output; SQL questions pass their row comparison."""
 
     def out(verdict: Verdict, detail: str = "") -> CaseJudgement:
         return CaseJudgement(verdict, result.stdout, _clip(detail), result.time_s, result.memory_kb)
@@ -92,7 +100,7 @@ def judge(language: str, result: RunResult, expected_output: str) -> CaseJudgeme
     if sid in _RUNTIME_ERRORS:
         return out(Verdict.RUNTIME_ERROR, result.stderr or result.message or result.status)
     if sid == ACCEPTED:
-        ok = outputs_match(result.stdout, expected_output)
+        ok = match(result.stdout, expected_output)
         return out(Verdict.PASSED if ok else Verdict.WRONG_ANSWER)
     # Internal Error, Exec Format Error, or an id we do not know: not the student's fault.
     raise AppError(

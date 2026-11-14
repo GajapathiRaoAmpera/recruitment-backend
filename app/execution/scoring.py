@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from app.execution.judge0 import MAX_BATCH, Judge0Client
 from app.execution.judging import CaseJudgement, Verdict, judge
+from app.execution.sql_mode.runner import SqlSetup
 
 
 @dataclass(frozen=True)
@@ -31,29 +32,49 @@ class SubmitResult:
 
 
 async def _judge_all(
-    client: Judge0Client, language: str, code: str, cases: list[CaseSpec]
+    client: Judge0Client,
+    language: str,
+    code: str,
+    cases: list[CaseSpec],
+    sql: SqlSetup | None = None,
 ) -> list[CaseJudgement]:
-    """Judge every case, in order. Cases beyond one Judge0 batch go in further batches."""
+    """Judge every case, in order. Cases beyond one Judge0 batch go in further batches.
+    SQL questions: each case's input is a dataset, built into its own source with the query."""
     judged: list[CaseJudgement] = []
     for start in range(0, len(cases), MAX_BATCH):
         chunk = cases[start : start + MAX_BATCH]
-        results = await client.run_many(language, code, [c.input for c in chunk])
-        judged += [judge(language, r, c.expected) for r, c in zip(results, chunk, strict=True)]
+        if sql is None:
+            results = await client.run_many(language, code, [c.input for c in chunk])
+            judged += [judge(language, r, c.expected) for r, c in zip(results, chunk, strict=True)]
+        else:
+            sources = [sql.build_source(c.input, code) for c in chunk]
+            results = await client.run_sources(language, sources)
+            judged += [
+                sql.judge(c.input, r, c.expected) for r, c in zip(results, chunk, strict=True)
+            ]
     return judged
 
 
 async def run_samples(
-    client: Judge0Client, language: str, code: str, cases: list[CaseSpec]
+    client: Judge0Client,
+    language: str,
+    code: str,
+    cases: list[CaseSpec],
+    sql: SqlSetup | None = None,
 ) -> list[CaseJudgement]:
     """Run button: sample cases only, one judgement each, in case order."""
     samples = [c for c in cases if c.is_sample]
-    return await _judge_all(client, language, code, samples) if samples else []
+    return await _judge_all(client, language, code, samples, sql) if samples else []
 
 
 async def submit(
-    client: Judge0Client, language: str, code: str, cases: list[CaseSpec]
+    client: Judge0Client,
+    language: str,
+    code: str,
+    cases: list[CaseSpec],
+    sql: SqlSetup | None = None,
 ) -> SubmitResult:
     """Submit button: every case counts. Returns counts only."""
-    judged = await _judge_all(client, language, code, cases) if cases else []
+    judged = await _judge_all(client, language, code, cases, sql) if cases else []
     verdicts = Counter(j.verdict for j in judged)
     return SubmitResult(passed=verdicts[Verdict.PASSED], total=len(cases), verdicts=dict(verdicts))

@@ -1,8 +1,10 @@
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+from app.execution.function_mode.signature import Signature
 
 
 class QuestionOut(BaseModel):
@@ -20,11 +22,30 @@ class LanguageOut(BaseModel):
     name: str
 
 
+class SqlTable(BaseModel):
+    columns: list[str]
+    rows: list[list[int | float | str | None]]
+
+
 class SampleCase(BaseModel):
     """Only sample cases ever reach a student; hidden cases have no field here."""
 
     input: str
     expected: str
+    # function mode: "nums = [1,2,3], target = 5"; stdin mode: the same text as `input`
+    input_display: str | None = None
+
+
+class SqlSampleCase(SampleCase):
+    """A SQL question's sample: `input` is "" (the setup script is never sent); the sample's
+    rows per table and the expected result rows instead."""
+
+    tables: dict[str, SqlTable]
+    expected_rows: list[list[str]]
+
+
+# a SQL sample first: a dict without `tables` fails it and becomes a plain SampleCase
+AnySample = Annotated[SqlSampleCase | SampleCase, Field(union_mode="left_to_right")]
 
 
 class CodingQuestionOut(BaseModel):
@@ -34,7 +55,13 @@ class CodingQuestionOut(BaseModel):
     statement: str
     marks: float
     languages: list[LanguageOut]
-    samples: list[SampleCase]  # at most 3
+    samples: list[AnySample]  # at most 3
+    mode: Literal["stdin", "function", "sql"] = "stdin"
+    signature: Signature | None = None  # function mode only
+    starter_code: dict[str, str] | None = None  # function mode: {language key: empty stub}
+    # sql mode only: the CREATE TABLE statements, and whether row order is compared
+    sql_schema: str | None = Field(default=None, serialization_alias="schema")
+    order_matters: bool | None = None
 
 
 class SavedCode(BaseModel):
