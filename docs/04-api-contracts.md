@@ -7,6 +7,9 @@ Auth column: **S** = student attempt token, **HR** = HR or Super Admin (HR limit
 ## Auth & student entry
 | Method | Path | Auth | Body → Response |
 |---|---|---|---|
+| POST | `/auth/login` | — | `{email, password}` → `{access_token, expires_in:28800, user:{id, email, full_name, role}}` · staff token: HS256 `typ:"staff"`, 8 h, sent as `Authorization: Bearer` · 401 `INVALID_CREDENTIALS` (same for unknown email, wrong password, inactive, password never set) · 429 `TOO_MANY_ATTEMPTS` (5 wrong passwords in a row → locked 15 min) |
+| POST | `/auth/forgot-password` | — | `{email}` → 204 always · emails a 1 h set-password link in the background only to an active account, so neither status nor timing reveals accounts |
+| POST | `/auth/set-password` | — | `{token, password}` → 204 · token from an invite (72 h) or reset (1 h) link `FRONTEND_URL/set-password?token=…`; works once (it carries the password version) · 400 `LINK_INVALID` (expired, used, wrong type, inactive user) · 422 `WEAK_PASSWORD` (< 10 chars; link stays valid) |
 | GET  | `/me` | HR | → `{id, email, full_name, role}` |
 | POST | `/entry/verify` | — | `{student_id, dob}` → `{entry_token, candidate:{full_name}, rounds:[{round_id, type, test_id}]}` · 401 `ENTRY_MISMATCH` (logged) |
 | POST | `/entry/steps` | entry | `{round_id, step:"location"\|"terms"\|"fullscreen", ok, meta}` → 204 |
@@ -92,9 +95,9 @@ Standalone entry: the student opens `/interview`, signs in with Student ID + DOB
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | GET | `/admin/users` | SA | → `{items:[{id, email, full_name, role, is_active, created_at}], next_cursor:null}` |
-| POST | `/admin/users` | SA | `{email, full_name, role:"hr"\|"super_admin"=hr, send_email=true}` → 201 `{...user, invite_link}` · creates the Supabase Auth user; `send_email:true` emails the invite to `FRONTEND_URL/set-password` (`invite_link:null`), `false` sends nothing and returns the one-time `invite_link` to share manually · 409 `USER_EXISTS` · 429 `EMAIL_RATE_LIMIT` · 502 `AUTH_PROVIDER_ERROR` |
+| POST | `/admin/users` | SA | `{email, full_name, role:"hr"\|"super_admin"=hr, send_email=true}` → 201 `{...user, invite_link}` · creates the `users` row with no password; `send_email:true` emails a 72 h set-password link over SMTP (`invite_link:null`), `false` sends nothing and returns that one-time `invite_link` to share manually · 409 `USER_EXISTS` · 503 `EMAIL_NOT_CONFIGURED` / 502 `EMAIL_FAILED` (nothing created; retry or use `send_email:false`) |
 | PATCH | `/admin/users/{id}` | SA | `{full_name?, role?, is_active?}` → user · 404 `USER_NOT_FOUND` · 409 `CANNOT_CHANGE_SELF` (own role/active) |
-| DELETE | `/admin/users/{id}` | SA | → 204 · removes the `users` row and the Supabase Auth account · 409 `SUPER_ADMIN_PROTECTED` (Super Admins are deactivate-only) · 409 `USER_IN_USE` when drives/audit history/questions reference the user (deactivate instead) · 409 `CANNOT_CHANGE_SELF` · 404 · 502 `AUTH_PROVIDER_ERROR` (nothing changed) |
+| DELETE | `/admin/users/{id}` | SA | → 204 · removes the `users` row · 409 `SUPER_ADMIN_PROTECTED` (Super Admins are deactivate-only) · 409 `USER_IN_USE` when drives/audit history/questions reference the user (deactivate instead) · 409 `CANNOT_CHANGE_SELF` · 404 |
 | GET/PUT | `/admin/ai-prompts/{key}` | SA |
 | GET/PUT | `/admin/settings` | SA |
 | GET | `/admin/audit-logs` | SA |
@@ -152,7 +155,7 @@ Generation failures are not HTTP errors: the background job sets `status:"failed
 ## Frontend screen → endpoint map
 | Stitch screen | Endpoints |
 |---|---|
-| login | Supabase Auth, `/me` |
+| login | `POST /auth/login`, `/me`, `/auth/forgot-password`, `/auth/set-password` |
 | hr_dashboard, drive_pipeline | `/drives`, `/drives/{id}/pipeline` |
 | create_campus_drive_wizard | `POST /drives`, `/drives/{id}/rounds`, `PUT /rounds/{id}/test` |
 | drive_registration | `/candidates/import`, `/resumes`, `/candidates`, `/shortlist` |

@@ -9,7 +9,7 @@ One web platform that runs a campus recruitment drive end to end (shortlist → 
 | Role | Login | Can |
 |---|---|---|
 | Student | No account. Emailed link + Student ID + DOB per round | Take rounds they are invited to, see own status |
-| HR | Email + password (Supabase Auth) | Everything about drives they own: candidates, rounds, questions, thresholds, emails, alerts, resume access, final decision |
+| HR | Email + password (own auth, D3) | Everything about drives they own: candidates, rounds, questions, thresholds, emails, alerts, resume access, final decision |
 | Super Admin | Email + password, created directly in DB | Everything HR can + users/roles, AI prompts, AI settings, audit logs |
 
 ## Functional requirements
@@ -65,7 +65,7 @@ IDs are referenced from the plan, API contracts and tests.
 | Performance | Run result p95 < 5 s; dashboard p95 < 2 s for 500 candidates. |
 | Scalability | One campus batch concurrently (assume **300** until decided). |
 | Auditability | Every verification step, violation and HR action is logged with actor + timestamp. |
-| Constraints | React + JavaScript frontend; Python REST API; Supabase (Postgres, Auth, Storage); Judge0; Gemini free tier; resume parsing must not use AI; web only. |
+| Constraints | React + JavaScript frontend; Python REST API; Azure Database for PostgreSQL; own staff auth (was Supabase, changed 2026-11-14); Judge0; Gemini free tier; resume parsing must not use AI; web only. |
 | Out of scope | Payments, offer letters, onboarding, mobile app, camera recording, face matching or automatic camera proctoring (live camera stills for HR during the AI interview are in scope, not stored). |
 
 ## Acceptance criteria (definition of done per area)
@@ -86,7 +86,7 @@ IDs are referenced from the plan, API contracts and tests.
 | Decision | Default we build against |
 |---|---|
 | Project name | "Ampera Campus Hire" (from designs) |
-| Login method | Supabase Auth email+password for HR/Admin; signed link + ID/DOB for students |
+| Login method | Email + password checked by our API (own JWT) for HR/Admin; signed link + ID/DOB for students |
 | Hosting | Frontend: Vercel/Netlify; API: Render/Railway; Judge0: self-hosted VM (Docker) |
 | Email service | Provider-agnostic `EmailSender`; dev = console, prod = Resend or SMTP |
 | AI interview scoring | Rubric JSON (communication, technical depth, problem solving, culture; 1–5 each) + summary |

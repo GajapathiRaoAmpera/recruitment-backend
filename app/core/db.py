@@ -13,11 +13,15 @@ from app.core.config import get_settings
 
 @lru_cache
 def get_engine() -> AsyncEngine:
-    # statement_cache_size=0: Supabase's transaction pooler breaks asyncpg prepared statements
+    # statement_cache_size=0: transaction poolers (Supabase, PgBouncer) break prepared statements
+    s = get_settings()
     return create_async_engine(
-        get_settings().database_url,
+        s.database_url,
         pool_pre_ping=True,
-        connect_args={"statement_cache_size": 0},
+        connect_args={
+            "statement_cache_size": 0,
+            "server_settings": {"search_path": s.db_schema},  # unqualified SQL hits our schema
+        },
     )
 
 

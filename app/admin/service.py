@@ -3,9 +3,11 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.admin import repo, supabase_admin
+from app.admin import repo
 from app.admin.schemas import UserCreate, UserCreated, UserOut, UserPatch
+from app.auth import staff
 from app.auth.schemas import StaffUser
+from app.core import email
 from app.core.audit import audit
 from app.core.errors import AppError
 
@@ -13,11 +15,13 @@ from app.core.errors import AppError
 async def create_user(session: AsyncSession, actor: StaffUser, body: UserCreate) -> UserCreated:
     if await repo.email_taken(session, body.email):
         raise AppError(409, "USER_EXISTS", "An account with this email already exists")
-    # shortcut: if the DB insert fails after the invite, the Supabase user is orphaned;
-    # re-inviting then returns USER_EXISTS. Add a cleanup call if this ever happens in practice.
-    user_id, link = await supabase_admin.invite_user(body.email, body.full_name, body.send_email)
-    row = await repo.insert_user(session, user_id, body.email, body.full_name, body.role)
-    await audit(session, actor.id, "user.create", "users", user_id, body.model_dump())
+    row = await repo.insert_user(session, body.email, body.full_name, body.role)
+    await audit(session, actor.id, "user.create", "users", row["id"], body.model_dump())
+    link: str | None = staff.set_password_link(row["id"], None, staff.INVITE_TTL)
+    if body.send_email:
+        # before commit: if the email fails, the user isn't created and the admin can retry
+        await email.send_email(row["email"], *staff.invite_email(row["full_name"], link))
+        link = None
     await session.commit()
     return UserCreated.model_validate({**dict(row), "invite_link": link})
 
@@ -67,6 +71,4 @@ async def delete_user(session: AsyncSession, actor: StaffUser, user_id: UUID) ->
         ) from e
     snapshot = {"email": current["email"], "role": current["role"]}
     await audit(session, actor.id, "user.delete", "users", user_id, snapshot)
-    # Supabase last: if it fails, nothing above is committed and the user stays intact.
-    await supabase_admin.delete_user(user_id)
     await session.commit()
