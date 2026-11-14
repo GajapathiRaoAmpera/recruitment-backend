@@ -117,6 +117,9 @@ async def open_session(session: AsyncSession, who: tokens.InterviewAuth) -> Sess
         jd=ctx["jd_text"] or "",
         earlier_turns=earlier,
         reference=await reference_material(session, ctx),
+        history=prompts.format_history(
+            await repo.earlier_results(session, ctx["round_id"], who.candidate_id), ctx["cgpa"]
+        ),
         overrides=overrides,
     )
     expires = ctx["deadline_at"] + TOKEN_SLACK
