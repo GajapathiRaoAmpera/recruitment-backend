@@ -42,7 +42,9 @@ async def verify_token(token: str) -> UUID:
             algorithms=ALGORITHMS,
             audience="authenticated",
             issuer=f"{url}/auth/v1",
-            options={"require": ["exp", "sub"]},
+            # Skip `iat` (exp is the real check): Supabase stamps it with its own clock, so a host
+            # a second behind saw fresh tokens as "not yet valid" and sign-in got a 401.
+            options={"require": ["exp", "sub"], "verify_iat": False},
         )
         return UUID(claims["sub"])
     except (jwt.PyJWTError, ValueError) as e:

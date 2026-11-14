@@ -16,7 +16,7 @@ One web platform that runs a campus recruitment drive end to end (shortlist → 
 IDs are referenced from the plan, API contracts and tests.
 
 ### Intake & shortlisting
-- **FR-1** HR creates a drive (company, campus, JD, role) via the wizard.
+- **FR-1** HR creates a drive (company, campus, JD, role) via the wizard. A Super Admin can create a drive for an HR owner and later hand it to another HR, so the drive appears in that HR's portal (HR still see only drives they own, AC-1).
 - **FR-2** HR uploads the Google Form Excel/CSV export and resumes (PDF, zip or per-row Drive links).
 - **FR-3** Local resume analyser (no AI) extracts text, skills, CGPA.
 - **FR-4** HR filters by skills, CGPA, JD-match score and shortlists.

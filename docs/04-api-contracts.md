@@ -15,8 +15,9 @@ Auth column: **S** = student attempt token, **HR** = HR or Super Admin (HR limit
 ## Drives & pipeline
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| GET/POST | `/drives` | HR | list own / create `{company, campus, role_title, jd_text}` |
+| GET/POST | `/drives` | HR | list own / create `{company, campus, role_title, jd_text, rounds?, owner_id?}`. `owner_id` is Super Admin only: the active HR who runs the drive (`422 INVALID_OWNER` otherwise; HR sending someone else's id gets `403`). Omitted = the caller owns it. Each drive returns `owner_id`, `owner_name`. |
 | GET/PATCH | `/drives/{id}` | HR | |
+| PATCH | `/drives/{id}/owner` | SA | `{owner_id}` → hand the drive to another active HR (`422 INVALID_OWNER`, `404 DRIVE_NOT_FOUND`); audited `drive.reassign {from, to}`; returns the drive |
 | GET | `/drives/{id}/pipeline` | HR | rounds with counts per `rc_status` |
 | POST | `/drives/{id}/rounds` | HR | `{type, mode, position}` — add technical round |
 | PATCH | `/rounds/{id}` | HR | `{status:"skipped"}`, `{mode}`, `{threshold}` |

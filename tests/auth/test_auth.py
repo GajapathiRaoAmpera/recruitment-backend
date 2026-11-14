@@ -97,6 +97,12 @@ def test_invalid_tokens_401(bad):
     assert r.status_code == 401 and r.json()["error"]["code"] == "INVALID_TOKEN"
 
 
+def test_fresh_token_from_a_clock_slightly_ahead_is_accepted():
+    # Supabase's clock ran ~1 s ahead of the API host: a just-issued token must still work.
+    r = client.get("/api/v1/me", headers=auth(token(iat=int(time.time()) + 5)))
+    assert r.status_code == 200
+
+
 @pytest.mark.parametrize("sub", [UNKNOWN, INACTIVE])
 def test_not_staff_403(sub):
     r = client.get("/api/v1/me", headers=auth(token(sub)))
