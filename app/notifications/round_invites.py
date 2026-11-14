@@ -28,10 +28,14 @@ LABELS = {
 Mail = tuple[str, str, str, str]  # to, subject, text, html
 
 
-def compose(row, shortlisted: bool, link: str) -> Mail:
+def compose(row, shortlisted: bool, link: str, ready: bool = False) -> Mail:
     rnd = LABELS.get(row["round_type"], row["round_type"].replace("_", " ").title())
     role, company = row["role_title"], row["company"]
-    if shortlisted:
+    if ready:  # HR sent the question paper: the test can be started now
+        subject = f"Your {rnd} is ready: {role} at {company}"
+        heading = f"Your {rnd} is ready"
+        lead = f"Your question paper for the {role} role at {company} is ready."
+    elif shortlisted:
         subject = f"You're shortlisted: {role} at {company}"
         heading = "You've been shortlisted"
         lead = f"Good news! Your resume has been shortlisted for the {role} role at {company}."
@@ -54,7 +58,11 @@ def compose(row, shortlisted: bool, link: str) -> Mail:
 
 
 async def for_round(
-    session: AsyncSession, round_id: UUID | None, candidate_ids: list[UUID], shortlisted: bool
+    session: AsyncSession,
+    round_id: UUID | None,
+    candidate_ids: list[UUID],
+    shortlisted: bool = False,
+    ready: bool = False,
 ) -> list[Mail]:
     """Build the emails now (inside the request's session); send them later with send_all."""
     if round_id is None or not candidate_ids:
@@ -69,7 +77,7 @@ async def for_round(
         {"r": round_id, "ids": candidate_ids},
     )
     link = f"{get_settings().frontend_url.rstrip('/')}/student/login"
-    return [compose(row, shortlisted, link) for row in result.mappings()]
+    return [compose(row, shortlisted, link, ready) for row in result.mappings()]
 
 
 async def send_all(mails: list[Mail]) -> None:

@@ -17,6 +17,7 @@ from app.advance.schemas import (
     InvitedOut,
     RankingOut,
 )
+from app.attempts import repo as attempts_repo
 from app.attempts import state_repo
 from app.auth.schemas import StaffUser
 from app.core.audit import audit
@@ -75,6 +76,16 @@ async def advance(
         raise AppError(409, "ROUND_ALREADY_ADVANCED", "This round was already advanced")
     if rnd["status"] != "active":
         raise AppError(409, "ROUND_NOT_ACTIVE", "Only an open round can be advanced")
+    # Advancing emails the passed students to start the next round: it must be sittable.
+    nxt = await repo.next_round(session, rnd["drive_id"], rnd["position"])
+    if nxt is not None and nxt["type"] == "coding":
+        if await attempts_repo.coding_question_count(session, nxt["id"]) == 0:
+            raise AppError(
+                409,
+                "NEXT_ROUND_NOT_READY",
+                "Add the coding questions to the next round before advancing",
+                {"next_round_id": str(nxt["id"])},
+            )
 
     expired = await repo.attempts_past_deadline(session, round_id)
     await _finalize(session, expired)
@@ -85,6 +96,13 @@ async def advance(
             409,
             "ROUND_STILL_RUNNING",
             "Some students are still writing this test",
+            {"counts": counts.model_dump(by_alias=True)},
+        )
+    if counts.absent and not body.mark_absent:
+        raise AppError(
+            409,
+            "NOT_STARTED",
+            "Some students haven't started this test yet",
             {"counts": counts.model_dump(by_alias=True)},
         )
     locked = [r for r in rows if r["attempt_status"] == "locked"]
@@ -121,7 +139,6 @@ async def advance(
     await repo.complete_round(session, round_id, threshold)
 
     passed = [e for e in entries if e.would_pass]
-    nxt = await repo.next_round(session, rnd["drive_id"], rnd["position"])
     invited: list[InvitedOut] = []
     if nxt is not None:
         await repo.open_round(session, nxt["id"])

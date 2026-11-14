@@ -134,3 +134,16 @@ async def link_questions(session: AsyncSession, attempt_id: UUID, rows: list[dic
         ),
         {"a": attempt_id, "rows": json.dumps(rows)},
     )
+
+
+async def coding_question_count(session: AsyncSession, round_id: UUID) -> int:
+    """Coding questions on the round's test (0 when the test isn't set up yet)."""
+    result = await session.execute(
+        text(
+            "select count(*) from tests t join test_questions tq on tq.test_id = t.id "
+            "join questions q on q.id = tq.question_id and q.kind = 'coding' "
+            "where t.round_id = :r"
+        ),
+        {"r": round_id},
+    )
+    return result.scalar_one()

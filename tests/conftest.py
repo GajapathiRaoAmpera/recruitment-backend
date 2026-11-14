@@ -14,7 +14,7 @@ def no_candidate_mail(monkeypatch):
     """API tests use fake sessions: record who would be emailed instead of querying/sending."""
     calls = []
 
-    async def for_round(_, round_id, ids, shortlisted):
+    async def for_round(_, round_id, ids, shortlisted=False, ready=False):
         calls.append((round_id, list(ids), shortlisted))
         return []
 
