@@ -55,6 +55,7 @@ IDs are referenced from the plan, API contracts and tests.
 - **FR-25** Closed attempts appear in that test's Alerts tab; HR can grant resume.
 - **FR-26** Emails sent at each stage, logged in `email_logs`.
 - **FR-27** Super Admin manages AI prompts, AI settings, users/roles; views audit log.
+- **FR-28** Once a drive is closed, HR downloads one Ampera-branded PDF report of the whole drive (funnel, per-round results, AI score vs HR decision, selected candidates, decision log) to share internally; no DOB, phone, email, answers or recordings in it.
 
 ## Non-functional requirements & constraints
 | Area | Requirement |
@@ -81,6 +82,7 @@ IDs are referenced from the plan, API contracts and tests.
 | AC-8 AI interview | Interview completes, transcript stored, score JSON valid against schema, HR can add notes. |
 | AC-9 HR flow | Skip a round → candidates move to the next; add technical round → appears in pipeline; per-test dashboard loads. |
 | AC-10 Audit | Every HR mutation and verification step has an `audit_logs` / `verification_logs` row. |
+| AC-11 Drive report | Closed drive → `report.pdf` downloads with numbers matching the round results; running drive → 409; another HR's drive → 404; candidate text containing markup renders as plain text; each download is audited. |
 
 ## Open decisions (defaults used until decided)
 | Decision | Default we build against |
