@@ -7,12 +7,16 @@ from app.execution.function_mode import values
 from app.execution.function_mode.signature import load_signature
 from app.execution.function_mode.starter import FUNCTION_LANGUAGES, starter_code
 from app.execution.languages import LANGUAGES
+from app.execution.sql_mode import student as sql_student
 
 
 def coding_fields(q: dict) -> dict:
     """Extra CodingQuestionOut fields for one row of coding_questions_for():
     mode, signature, starter_code, languages (no SQL in function mode), and samples with
-    `input_display` ("nums = [1,2,3], target = 5"; the raw input for stdin questions)."""
+    `input_display` ("nums = [1,2,3], target = 5"; the raw input for stdin questions).
+    SQL questions: see sql_mode/student.py."""
+    if q.get("mode") == "sql":
+        return sql_student.coding_fields(q)
     signature = load_signature(q.get("signature"))
     samples = [dict(s) for s in q.get("samples", [])]
     if signature is None:

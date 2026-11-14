@@ -43,6 +43,16 @@ async def function_signature(session: AsyncSession, question_id: UUID):
     return rows.scalar_one_or_none()
 
 
+async def sql_setup(session: AsyncSession, question_id: UUID) -> RowMapping | None:
+    """{sql_schema, sql_order_matters} when it is a SQL question, else None. Never the
+    reference query."""
+    rows = await session.execute(
+        text("select sql_schema, sql_order_matters from questions where id = :q and mode = 'sql'"),
+        {"q": question_id},
+    )
+    return rows.mappings().one_or_none()
+
+
 async def load_cases(
     session: AsyncSession, question_id: UUID, *, samples_only: bool
 ) -> list[CaseSpec]:

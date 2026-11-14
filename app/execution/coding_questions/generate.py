@@ -12,6 +12,11 @@ Mode "function" (LeetCode-style): the model also writes the signature, the refer
 is a Python *function*, and each input is a JSON object of parameter values. Inputs are
 stored in the canonical format (function_mode/values.py), and the reference runs through the
 same fixed Python driver students' code runs through, so its stdout is the canonical answer.
+
+Mode "sql" (SQLite): the model writes only the problem, the schema, ONE base dataset, a
+reference query and order_matters; the reply is small. Our code derives the 18 datasets from
+the base rows with a fixed seed (sql_mode/datasets.py) and each expected output is the
+reference query's rows on Judge0, so the model never writes inputs or outputs.
 """
 
 import ast
@@ -21,12 +26,14 @@ import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import ClassVar
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     PrivateAttr,
+    StrictBool,
     ValidationError,
     field_validator,
     model_validator,
@@ -44,12 +51,17 @@ from app.execution.coding_questions.schemas import (
 from app.execution.function_mode import values
 from app.execution.function_mode.drivers import build_source
 from app.execution.function_mode.signature import MAX_PARAMETERS, Signature
-from app.execution.judge0 import ACCEPTED, Judge0Client, RunResult
+from app.execution.judge0 import ACCEPTED, MAX_BATCH, Judge0Client, RunResult
+from app.execution.judging import normalize_output
+from app.execution.sql_mode import datasets as sql_datasets
+from app.execution.sql_mode.runner import SqlSetup, remap_lines
+from app.execution.sql_mode.script import Schema, check_query, parse_dataset, parse_schema
 from app.papers.agents import LlmClient, LlmOutputError, NvidiaClient
 
 log = logging.getLogger(__name__)
 
 REFERENCE_LANGUAGE = "python"  # Judge0 image: Python 3.8
+SQL_LANGUAGE = "sql"  # Judge0 image: SQLite 3.27.2
 MAX_COUNT = 3
 MAX_AVOID = 30  # this HR's most recent coding titles, passed as "do not repeat"
 MAX_TITLE_CHARS = 120
@@ -140,6 +152,10 @@ class GeneratedCodingQuestion(BaseModel):
         """What runs on Judge0 to produce the expected outputs."""
         return self.reference_solution
 
+    reference_language: ClassVar[str] = REFERENCE_LANGUAGE
+    sql_schema: ClassVar[None] = None  # SQL questions only
+    order_matters: ClassVar[None] = None
+
 
 _STDIN_WORDING = re.compile(r"\b(stdin|standard input|stdout|standard output)\b", re.IGNORECASE)
 
@@ -217,6 +233,98 @@ class GeneratedFunctionQuestion(BaseModel):
     @property
     def source(self) -> str:
         return build_source(REFERENCE_LANGUAGE, self.signature, self.reference_solution)
+
+    reference_language: ClassVar[str] = REFERENCE_LANGUAGE
+    sql_schema: ClassVar[None] = None  # SQL questions only
+    order_matters: ClassVar[None] = None
+
+
+class GeneratedSqlQuestion(BaseModel):
+    """One model reply for a SQL question. Validated strictly before anything runs: the schema
+    (CREATE TABLE only), the base dataset (literal INSERTs only), the reference query (one
+    read-only SELECT / WITH). The 18 datasets are derived here by code, not by the model."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    title: str = Field(min_length=1, max_length=MAX_TITLE_CHARS)
+    statement: str = Field(min_length=1)
+    schema_sql: str = Field(alias="schema", min_length=1)  # "schema" shadows a BaseModel name
+    dataset: str = Field(min_length=1)
+    reference_query: str = Field(min_length=1)
+    order_matters: StrictBool
+    _schema: Schema = PrivateAttr()
+    _datasets: list[str] = PrivateAttr(default_factory=list)
+    _reference: str = PrivateAttr(default="")
+
+    @field_validator("title")
+    @classmethod
+    def _one_line_title(cls, v: str) -> str:
+        v = v.strip()
+        if not v or "\n" in v:
+            raise ValueError("title must be one non-blank line")
+        return v
+
+    @field_validator("statement")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must not be blank")
+        return v.strip("\n")
+
+    @model_validator(mode="after")
+    def _whole(self) -> "GeneratedSqlQuestion":
+        if len(self.body) > MAX_BODY_CHARS:
+            raise ValueError(f"title + statement is longer than {MAX_BODY_CHARS} characters")
+        schema = _sql_part("schema", parse_schema, self.schema_sql)
+        rows = _sql_part("dataset", parse_dataset, self.dataset, schema)
+        self._reference = _sql_part(
+            "reference_query", check_query, self.reference_query, order_matters=self.order_matters
+        )
+        self._datasets = _sql_part("dataset", sql_datasets.derive, schema, rows)
+        self._schema = schema
+        if any(len(d) > MAX_CASE_CHARS for d in self._datasets):
+            raise ValueError(f"dataset: a derived dataset is longer than {MAX_CASE_CHARS} chars")
+        return self
+
+    @property
+    def body(self) -> str:
+        return f"{self.title}\n{self.statement}"
+
+    @property
+    def inputs(self) -> list[str]:
+        """The 18 derived datasets (3 sample, then 15 hidden)."""
+        return list(self._datasets)
+
+    @property
+    def mode(self) -> str:
+        return "sql"
+
+    @property
+    def signature(self) -> Signature | None:
+        return None
+
+    @property
+    def parsed_schema(self) -> Schema:
+        return self._schema
+
+    @property
+    def sql_schema(self) -> str:
+        """Normalised CREATE TABLE statements (stored, shown to students)."""
+        return self._schema.text
+
+    @property
+    def reference_solution(self) -> str:
+        return self._reference
+
+    reference_language: ClassVar[str] = SQL_LANGUAGE
+
+
+def _sql_part(field: str, check, *args, **kwargs):
+    """Run one sql_mode check; its ValueError names the reply field it is about."""
+    try:
+        return check(*args, **kwargs)
+    except ValueError as e:
+        raise ValueError(f"{field}: {e}") from None
 
 
 def _check_reference_function(code: str, sig: Signature) -> None:
@@ -339,6 +447,36 @@ Rules:
 - All 18 inputs are different and fit the constraints in the statement."""
 
 
+_SQL_LEVELS = {
+    "easy": "EASY: one table; WHERE, ORDER BY, simple aggregates (COUNT, SUM, AVG).",
+    "medium": "MEDIUM: a JOIN of two tables, GROUP BY with HAVING, or LEFT JOIN with NULLs.",
+    "advanced": "ADVANCED: subqueries or CTEs, window functions (RANK, ROW_NUMBER, running "
+    "totals) or several joins.",
+}
+
+SQL_SYSTEM_PROMPT = f"""You write SQL problems for a campus hiring test. Students write one
+SQLite 3.27 query; it runs on your tables and its rows are compared with your reference
+query's rows (column names are ignored). Reply with JSON only:
+{{"title": "...", "statement": "...", "schema": "CREATE TABLE ...;",
+  "dataset": "INSERT INTO ... VALUES (...), (...);", "reference_query": "SELECT ...;",
+  "order_matters": true}}
+
+Rules:
+- title: one line, at most {MAX_TITLE_CHARS} characters.
+- statement: plain text. Describe each table and its columns, exactly which columns to
+  return in which order, and say either "Return the rows ordered by ..." or "Row order does
+  not matter". No example output.
+- schema: 1 to 3 CREATE TABLE statements only (column types INTEGER, TEXT, REAL).
+- dataset: INSERT statements only, a value for every column, literal values only (numbers,
+  'text', NULL), 8 to 12 rows per table, including the edge cases the task needs (NULLs,
+  ties, duplicates, rows that match nothing). No | or line breaks inside text.
+  The judge also runs your query on shuffled subsets of these rows, so it must be correct for
+  any subset and any insertion order.
+- reference_query: ONE SELECT (or WITH ... SELECT) statement. No random(), no 'now'.
+- order_matters: true only when the statement asks for an order; then ORDER BY must decide
+  the order completely (add tie-breakers, e.g. "ORDER BY salary DESC, id")."""
+
+
 def build_user_prompt(
     *,
     difficulty: str,
@@ -347,9 +485,12 @@ def build_user_prompt(
     count: int,
     avoid: Sequence[str],
     feedback: str | None = None,
+    mode: str = "stdin",
 ) -> str:
-    parts = [f"Difficulty: {_LEVELS[difficulty]}"]
-    parts.append(f"Topic: {topic}" if topic else "Topic: any classic programming topic.")
+    levels = _SQL_LEVELS if mode == "sql" else _LEVELS
+    parts = [f"Difficulty: {levels[difficulty]}"]
+    any_topic = "any classic SQL topic" if mode == "sql" else "any classic programming topic"
+    parts.append(f"Topic: {topic}" if topic else f"Topic: {any_topic}.")
     if count > 1:
         parts.append(
             f"This is problem {index + 1} of {count} written separately for the same test. "
@@ -380,7 +521,7 @@ def _ordinal(i: int) -> str:
 class Draft:
     """A question that passed every check, ready to save."""
 
-    question: GeneratedCodingQuestion | GeneratedFunctionQuestion
+    question: GeneratedCodingQuestion | GeneratedFunctionQuestion | GeneratedSqlQuestion
     cases: list[CaseIn]
 
 
@@ -438,6 +579,96 @@ def check_runs(
     return None
 
 
+def _dataset_where(i: int) -> str:
+    return f"dataset {i + 1} ({'sample' if i < SAMPLE_CASES else 'hidden'})"
+
+
+async def sql_expected_cases(
+    judge0: Judge0Client, q: GeneratedSqlQuestion
+) -> list[CaseIn] | tuple[str, str]:
+    """Run the reference query on the 18 datasets, and on each with its rows inserted in
+    reverse order: the same rows must give the same result, so the expected rows depend on the
+    data only (catches LIMIT without ORDER BY, unbroken ORDER BY ties, order-dependent
+    group_concat). Tables with an INTEGER PRIMARY KEY are read in key order whatever the
+    insertion order, so for them this is already data-determined. The cases, or
+    (reason, feedback)."""
+    setup = SqlSetup(schema=q.sql_schema, order_matters=q.order_matters)
+    sets = q.inputs
+    variants = sets + [sql_datasets.reversed_order(q.parsed_schema, d) for d in sets]
+    runs: list[RunResult] = []
+    for start in range(0, len(variants), MAX_BATCH):
+        chunk = variants[start : start + MAX_BATCH]
+        sources = [setup.build_source(d, q.reference_solution) for d in chunk]
+        runs += await judge0.run_sources(SQL_LANGUAGE, sources)
+    main, flipped = runs[: len(sets)], runs[len(sets) :]
+    for i, r in enumerate(main + flipped):
+        where = _dataset_where(i % len(sets))
+        if r.status_id != ACCEPTED or r.stderr.strip():
+            err = remap_lines(r.stderr or r.message, setup.line_offset(variants[i]))
+            return (
+                f"reference query failed on {where}: {_cut(err.strip(), 200) or r.status}",
+                f"Your reference_query failed on {where} of the derived datasets:\n{_cut(err)}",
+            )
+        if len(r.stdout) > MAX_CASE_CHARS:
+            return (
+                f"reference query output on {where} is too long",
+                f"Your reference_query returned more than {MAX_CASE_CHARS} characters. "
+                "Return fewer rows or columns.",
+            )
+        if r.time_s is not None and r.time_s > REFERENCE_MAX_TIME_S:
+            return (
+                f"reference query is too slow on {where} ({r.time_s:.2f} s)",
+                f"Your reference_query took {r.time_s:.2f} s; keep it simple and fast.",
+            )
+    for i, (a, b) in enumerate(zip(main, flipped, strict=True)):
+        if not setup.rows_match(b.stdout, a.stdout):
+            return (
+                f"reference query result depends on row insertion order ({_dataset_where(i)})",
+                "Your reference_query returned different rows when the same rows were inserted "
+                "in another order. Make the result depend on the data only: ORDER BY must break "
+                "every tie (and LIMIT must not cut through a tie), or set order_matters false.",
+            )
+    keys = {_rows_key(r.stdout, q.order_matters) for r in main}
+    if keys == {()}:
+        return (
+            "every dataset gives an empty result",
+            "Your reference_query returned no rows on every dataset. Change the data or the "
+            "query so that rows are returned.",
+        )
+    if len(keys) < 2:
+        return (
+            "every dataset gives the same result",
+            "Your reference_query returned the same rows for all 18 datasets (subsets of your "
+            "rows), so the tests cannot tell right from wrong queries. Make the result depend "
+            "on which rows are present.",
+        )
+    return [
+        # model_construct: an empty result is a valid expected output for SQL
+        CaseIn.model_construct(input=d, expected=r.stdout, is_sample=i < SAMPLE_CASES)
+        for i, (d, r) in enumerate(zip(sets, main, strict=True))
+    ]
+
+
+def _rows_key(stdout: str, order_matters: bool) -> tuple[str, ...]:
+    text = normalize_output(stdout)
+    lines = text.split("\n") if text else []
+    return tuple(lines if order_matters else sorted(lines))
+
+
+async def _expected_cases(
+    judge0: Judge0Client, q: GeneratedCodingQuestion | GeneratedFunctionQuestion
+) -> list[CaseIn] | tuple[str, str]:
+    """stdin / function: the reference solution's stdout per input, or (reason, feedback)."""
+    runs = await judge0.run_many(REFERENCE_LANGUAGE, q.source, q.inputs)
+    problem = check_runs(q, runs)
+    if problem:
+        return problem
+    return [
+        CaseIn(input=stdin, expected=r.stdout, is_sample=i < SAMPLE_CASES)
+        for i, (stdin, r) in enumerate(zip(q.inputs, runs, strict=True))
+    ]
+
+
 async def generate_one(
     llm: LlmClient,
     judge0: Judge0Client,
@@ -451,8 +682,10 @@ async def generate_one(
 ) -> Draft:
     """Provider errors (AppError) propagate; bad output or a failing solution raises
     QuestionFailed after ATTEMPTS tries."""
-    system = FUNCTION_SYSTEM_PROMPT if mode == "function" else SYSTEM_PROMPT
-    model = GeneratedFunctionQuestion if mode == "function" else GeneratedCodingQuestion
+    system, model = {
+        "function": (FUNCTION_SYSTEM_PROMPT, GeneratedFunctionQuestion),
+        "sql": (SQL_SYSTEM_PROMPT, GeneratedSqlQuestion),
+    }.get(mode, (SYSTEM_PROMPT, GeneratedCodingQuestion))
     feedback: str | None = None
     reason = "no attempt made"
     for attempt in range(1, ATTEMPTS + 1):
@@ -463,6 +696,7 @@ async def generate_one(
             count=count,
             avoid=avoid,
             feedback=feedback,
+            mode=mode,
         )
         try:
             raw = await llm.complete_json(system=system, user=user)
@@ -486,24 +720,26 @@ async def generate_one(
             log.info("question %d attempt %d: invalid reply", index, attempt)
             continue
         try:
-            runs = await judge0.run_many(REFERENCE_LANGUAGE, q.source, q.inputs)
+            if isinstance(q, GeneratedSqlQuestion):
+                outcome = await sql_expected_cases(judge0, q)
+            else:
+                outcome = await _expected_cases(judge0, q)
         except AppError as e:
             if e.code != "EXECUTION_TIMEOUT":
                 raise  # Judge0 down: the whole request stops
             reason = "Judge0 timed out running the reference solution"
-            feedback = "Running your reference_solution on the 18 inputs took too long."
+            feedback = (
+                "Running your reference_query on the 18 datasets took too long."
+                if isinstance(q, GeneratedSqlQuestion)
+                else "Running your reference_solution on the 18 inputs took too long."
+            )
             log.info("question %d attempt %d: %s", index, attempt, reason)
             continue
-        problem = check_runs(q, runs)
-        if problem:
-            reason, feedback = problem
+        if isinstance(outcome, tuple):
+            reason, feedback = outcome
             log.info("question %d attempt %d: %s", index, attempt, reason)
             continue
-        cases = [
-            CaseIn(input=stdin, expected=r.stdout, is_sample=i < SAMPLE_CASES)
-            for i, (stdin, r) in enumerate(zip(q.inputs, runs, strict=True))
-        ]
-        return Draft(question=q, cases=cases)
+        return Draft(question=q, cases=outcome)
     raise QuestionFailed(reason)
 
 

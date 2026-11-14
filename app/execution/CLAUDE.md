@@ -5,3 +5,4 @@
 - Languages map in one dict (SQL→SQLite, Python, C, C++, Java, Go); AC-5 integration test runs a reference solution per language.
 - Unit tests mock Judge0; never call it from unit tests.
 - Function-mode drivers (`function_mode/templates/*.tmpl`) are fixed repo code, never LLM-written; `build_source()` output goes to Judge0 only, never into a response, DB row or log. Student code stays first so error line numbers match. Change a template → run `test_function_drivers_judge0.py`.
+- SQL questions (`sql_mode/`): the setup (`.open :memory:` + settings + schema + dataset) is built by `SqlSetup.build_source()` for Judge0 only, never into a response or log; datasets are derived by fixed-seed code, never by the LLM; expected rows come only from running the reference query on Judge0. Change the setup → run `test_sql_mode_judge0.py`.

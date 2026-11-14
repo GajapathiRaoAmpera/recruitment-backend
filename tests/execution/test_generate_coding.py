@@ -127,6 +127,8 @@ def db(monkeypatch):
             reference_language=ref.get("reference_language"),
             mode=ref.get("mode", "stdin"),
             signature=ref.get("signature"),
+            sql_schema=ref.get("sql_schema"),
+            sql_order_matters=ref.get("sql_order_matters"),
         )
         questions[row["id"]] = row
         return row

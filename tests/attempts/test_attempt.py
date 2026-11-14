@@ -180,6 +180,8 @@ def test_coding_question_has_title_statement_languages_and_only_sample_cases():
         "mode",
         "signature",
         "starter_code",  # function-mode fields (null for stdin questions)
+        "schema",
+        "order_matters",  # sql-mode fields (null for stdin questions)
     }
     assert q["title"] == "Two Sum" and q["statement"].startswith("Two Sum")
     assert {"key": "python", "name": "Python 3.8"} in q["languages"]

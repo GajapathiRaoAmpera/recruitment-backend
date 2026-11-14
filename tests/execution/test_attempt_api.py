@@ -66,6 +66,7 @@ def env(monkeypatch):
         session=FakeSession(),
         judge0=FakeJudge0(),
         signature=None,  # stdin question; a dict makes it a function-mode question
+        sql=None,  # a {sql_schema, sql_order_matters} row makes it a SQL question
     )
 
     async def get_attempt(_, attempt_id):
@@ -94,6 +95,11 @@ def env(monkeypatch):
         return state["signature"]
 
     monkeypatch.setattr(repo, "function_signature", function_signature)
+
+    async def sql_setup(_, question_id):
+        return state["sql"]
+
+    monkeypatch.setattr(repo, "sql_setup", sql_setup)
     monkeypatch.setattr(repo, "load_cases", load_cases)
     monkeypatch.setattr(repo, "save_submission", save)
     app.dependency_overrides[get_session] = lambda: state["session"]

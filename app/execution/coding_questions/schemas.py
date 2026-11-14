@@ -12,6 +12,8 @@ from app.execution.function_mode import values
 from app.execution.function_mode.signature import Mode, Signature
 
 Difficulty = Literal["easy", "medium", "advanced"]
+# "sql" questions are only made by POST /questions/generate: manual create and PATCH keep `Mode`
+QuestionMode = Literal["stdin", "function", "sql"]
 
 SAMPLE_CASES = 3
 HIDDEN_CASES = 15
@@ -174,8 +176,12 @@ class CodingQuestionOut(BaseModel):
     # AI questions: the program whose Judge0 stdout became `expected`. Null for manual ones.
     reference_solution: str | None = None
     reference_language: str | None = None
-    mode: Mode = "stdin"
+    mode: QuestionMode = "stdin"
     signature: Signature | None = None  # set exactly when mode is "function"
+    # mode "sql" only: the CREATE TABLE statements and whether row order is compared. Each
+    # test case's input is one dataset (INSERTs); read-only (PATCH can't change them).
+    sql_schema: str | None = Field(default=None, serialization_alias="schema")
+    order_matters: bool | None = None
     test_cases: list[CaseOut]
 
 
@@ -189,7 +195,8 @@ class GenerateIn(BaseModel):
     tags: list[str] = []
     marks: Decimal = Field(default=Decimal(1), gt=0, le=999, decimal_places=2)
     count: int = Field(default=1, ge=1, le=3)
-    mode: Mode = "stdin"  # "function": the model also writes the signature
+    # "function": the model also writes the signature; "sql": schema, base rows, reference query
+    mode: QuestionMode = "stdin"
 
     @field_validator("topic")
     @classmethod

@@ -42,6 +42,8 @@ async def _out(session: AsyncSession, row) -> CodingQuestionOut:
     data = dict(row)
     data["mode"] = data.get("mode") or "stdin"
     data["signature"] = load_signature(data.get("signature"))
+    data["sql_schema"] = data.get("sql_schema")
+    data["order_matters"] = data.get("sql_order_matters")
     return CodingQuestionOut.model_validate({**data, "test_cases": [dict(c) for c in cases]})
 
 
@@ -120,9 +122,11 @@ async def generate(
             body.tags,
             body.marks,
             reference_solution=d.question.reference_solution,
-            reference_language=gen.REFERENCE_LANGUAGE,
+            reference_language=d.question.reference_language,
             mode=d.question.mode,
             signature=d.question.signature.model_dump() if d.question.signature else None,
+            sql_schema=d.question.sql_schema,
+            sql_order_matters=d.question.order_matters,
         )
         await repo.insert_cases(session, row["id"], d.cases)
         await audit(  # counts only, like question.create
@@ -135,7 +139,7 @@ async def generate(
                 "kind": "coding",
                 "difficulty": body.difficulty,
                 "test_cases": len(d.cases),
-                "reference_language": gen.REFERENCE_LANGUAGE,
+                "reference_language": d.question.reference_language,
                 "model": getattr(llm, "model", None),
             },
         )
@@ -181,7 +185,16 @@ async def update(
     current = await _load(session, user, question_id)
     changes = patch.model_dump(exclude={"test_cases", "mode", "signature"}, exclude_unset=True)
     old_shape = (current.get("mode") or "stdin", load_signature(current.get("signature")))
-    mode, signature = _resulting_shape(current, patch)
+    if old_shape[0] == "sql":
+        # schema, datasets and expected rows come from generation + Judge0: read-only
+        locked = sorted(patch.model_fields_set & {"mode", "signature", "test_cases"})
+        if locked:
+            raise _invalid(
+                locked[0],
+                "a SQL question's mode, schema and datasets can't be edited; change its "
+                "body, difficulty, tags, marks or approval, or generate a new question",
+            )
+    mode, signature = old_shape if old_shape[0] == "sql" else _resulting_shape(current, patch)
     shape_changed = (mode, signature) != old_shape
     if (patch.test_cases is not None or shape_changed) and await repo.has_answers(
         session, question_id

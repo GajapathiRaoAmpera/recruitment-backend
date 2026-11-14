@@ -21,6 +21,7 @@ from app.execution.schemas import (
     RunOut,
     SubmitCodeOut,
 )
+from app.execution.sql_mode.runner import SqlSetup, check_language, load_setup
 
 # shortcut: in-process, so it holds for one API process. With several workers or replicas
 # the guard needs a shared lock (Redis / advisory lock); Judge0 limits still bound the damage.
@@ -64,16 +65,26 @@ async def _source(session: AsyncSession, body: CodeRequest) -> str:
     return build_source(body.language, signature, body.code)
 
 
+async def _sql(session: AsyncSession, body: CodeRequest) -> SqlSetup | None:
+    """SQL question: its schema + row-order rule (each case's input is a dataset that runner.py
+    joins with the query; 422 LANGUAGE_NOT_ALLOWED for anything but sql). Else None."""
+    setup = load_setup(await repo.sql_setup(session, body.question_id))
+    if setup is not None:
+        check_language(body.language)
+    return setup
+
+
 async def run(
     session: AsyncSession, client: Judge0Client, ctx: AttemptContext, body: CodeRequest
 ) -> RunOut:
     """Run button: the 3 sample cases, with a result for each. Hidden cases are never loaded."""
     with one_run_at_a_time(ctx.candidate_id):
         await _check_can_run(session, ctx, body.question_id)
-        source = await _source(session, body)
+        sql = await _sql(session, body)
+        source = body.code if sql else await _source(session, body)
         cases = await repo.load_cases(session, body.question_id, samples_only=True)
         await session.commit()  # end the read transaction: Judge0 can take up to 15 s
-        judged = await scoring.run_samples(client, body.language, source, cases)
+        judged = await scoring.run_samples(client, body.language, source, cases, sql)
     return RunOut(results=[CaseResult.of(i, j) for i, j in enumerate(judged, start=1)])
 
 
@@ -84,12 +95,13 @@ async def submit_code(
     else. The pass count is saved on the answer (latest submission wins)."""
     with one_run_at_a_time(ctx.candidate_id):
         await _check_can_run(session, ctx, body.question_id)
-        source = await _source(session, body)
+        sql = await _sql(session, body)
+        source = body.code if sql else await _source(session, body)
         cases = await repo.load_cases(session, body.question_id, samples_only=False)
         if not cases:
             raise AppError(409, "NO_TEST_CASES", "This question has no test cases yet")
         await session.commit()
-        result = await scoring.submit(client, body.language, source, cases)
+        result = await scoring.submit(client, body.language, source, cases, sql)
     # a Judge0 outage raised above, so nothing is saved and the old result stays
     saved = await repo.save_submission(
         session,
