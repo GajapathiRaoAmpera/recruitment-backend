@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import AppError
 from app.execution import repo, scoring
 from app.execution.deps import AttemptContext
+from app.execution.function_mode.drivers import build_source
+from app.execution.function_mode.signature import load_signature
 from app.execution.judge0 import Judge0Client
 from app.execution.schemas import (
     CaseResult,
@@ -52,15 +54,26 @@ async def _check_can_run(session: AsyncSession, ctx: AttemptContext, question_id
         raise AppError(404, "QUESTION_NOT_FOUND", "Coding question not found in this test")
 
 
+async def _source(session: AsyncSession, body: CodeRequest) -> str:
+    """What Judge0 runs: the student's code as is (stdin mode), or the student's function
+    followed by the hidden driver (function mode; 422 LANGUAGE_NOT_ALLOWED for SQL).
+    The combined source is never returned to the student."""
+    signature = load_signature(await repo.function_signature(session, body.question_id))
+    if signature is None:
+        return body.code
+    return build_source(body.language, signature, body.code)
+
+
 async def run(
     session: AsyncSession, client: Judge0Client, ctx: AttemptContext, body: CodeRequest
 ) -> RunOut:
     """Run button: the 3 sample cases, with a result for each. Hidden cases are never loaded."""
     with one_run_at_a_time(ctx.candidate_id):
         await _check_can_run(session, ctx, body.question_id)
+        source = await _source(session, body)
         cases = await repo.load_cases(session, body.question_id, samples_only=True)
         await session.commit()  # end the read transaction: Judge0 can take up to 15 s
-        judged = await scoring.run_samples(client, body.language, body.code, cases)
+        judged = await scoring.run_samples(client, body.language, source, cases)
     return RunOut(results=[CaseResult.of(i, j) for i, j in enumerate(judged, start=1)])
 
 
@@ -71,11 +84,12 @@ async def submit_code(
     else. The pass count is saved on the answer (latest submission wins)."""
     with one_run_at_a_time(ctx.candidate_id):
         await _check_can_run(session, ctx, body.question_id)
+        source = await _source(session, body)
         cases = await repo.load_cases(session, body.question_id, samples_only=False)
         if not cases:
             raise AppError(409, "NO_TEST_CASES", "This question has no test cases yet")
         await session.commit()
-        result = await scoring.submit(client, body.language, body.code, cases)
+        result = await scoring.submit(client, body.language, source, cases)
     # a Judge0 outage raised above, so nothing is saved and the old result stays
     saved = await repo.save_submission(
         session,

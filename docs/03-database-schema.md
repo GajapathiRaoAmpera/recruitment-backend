@@ -114,7 +114,9 @@ create table questions (
   approved      boolean not null default false,
   created_by    uuid references users(id),
   created_at    timestamptz not null default now(),
-  explanation   text                                   -- 0002: worked solution / "why"; HR only
+  explanation   text,                                  -- 0002: worked solution / "why"; HR only
+  mode          text not null default 'stdin',         -- 0010: stdin | function (check)
+  signature     jsonb                                  -- 0010: function mode only (check: set exactly when mode = 'function')
 );
 
 create table test_questions (
@@ -322,6 +324,7 @@ end $$;
 - `paper_issues` rows are never rewritten: sending again to the same candidate is a no-op.
 - Bank questions (`questions.source_id is not null`) are inserted `approved = false`; only approved questions of `is_active` + `status = 'ready'` sources are retrieved for papers. Deleting a source hard-deletes its questions and embeddings (FK cascade); paper pools hold their own copies with new ids, so sent papers are unaffected.
 - A draft in `generating` for more than 15 minutes is reported as `failed` ("Generation timed out") on read.
+- Function-mode questions (`questions.mode = 'function'`): `test_cases.input` / `expected` are stored in the canonical per-type format (docs/04 "Function-mode coding questions"); the driver that joins student code for Judge0 lives only in `app/execution/function_mode/` and is never stored or sent to a student; `answers.code` / `draft_code` hold the student's function only.
 - Coding answers: submit-code sets `code`, `language`, `passed_cases`, `total_cases`, `updated_at` and `marks = round(questions.marks * passed / total, 2)` together, only while the attempt is `in_progress` or `locked` (row-locked), so the final submit's `attempts.marks = sum(answers.marks)` includes coding. A code draft only sets `draft_*`; the draft is newer than the submission when `draft_saved_at >= updated_at`.
 
 ## 0003_round_duration
@@ -332,3 +335,6 @@ end $$;
 
 ## 0007_question_reference_solution
 `questions.reference_solution text`, `questions.reference_language text` (both nullable, check `questions_reference_pair`: set together or both null). Written by `POST /questions/generate`: the program whose Judge0 stdout became each test case's `expected` (`reference_language` is `'python'`). Such questions are inserted `approved = false`, `ai_generated = true`. Manual coding questions leave both null. HR/Super Admin only.
+
+## 0010_question_function_mode
+`questions.mode text not null default 'stdin'` (check `questions_mode_check`: `'stdin'` or `'function'`) and `questions.signature jsonb` (nullable; check `questions_signature_mode`: `(mode = 'function') = (signature is not null)`). Every existing question becomes `stdin` and keeps working unchanged. `signature` = `{"function_name": "twoSum", "parameters": [{"name": "nums", "type": "int[]"}, {"name": "target", "type": "int"}], "return_type": "int[]"}`, validated by the API (types limited to `int, long, double, bool, string, int[], string[], int[][]`; names checked against every language's keywords). Written by `POST/PATCH /questions` and `POST /questions/generate` (`mode:"function"`). Not secret: students see `mode` and `signature` in `GET /attempt`. Downgrade drops both columns and both checks.

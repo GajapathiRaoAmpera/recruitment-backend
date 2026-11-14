@@ -1,0 +1,60 @@
+
+
+# ---- driver (added by the judge): read the case, call the function, print the result ----
+import sys as _drv_sys
+import json as _drv_json
+import contextlib as _drv_ctx
+
+
+def _drv_fail(msg):
+    _drv_sys.stderr.write(msg + "\n")
+    _drv_sys.stderr.flush()
+    _drv_sys.exit(1)
+
+
+def _drv_fmt(t, v):
+    """Canonical text of v as type t; raises ValueError when v is not a t."""
+    if t in ("int", "long"):
+        if type(v) is not int:
+            raise ValueError("a whole number")
+        lo, hi = (-(2 ** 31), 2 ** 31 - 1) if t == "int" else (-(2 ** 63), 2 ** 63 - 1)
+        if not lo <= v <= hi:
+            raise ValueError("a whole number that fits in " + ("32" if t == "int" else "64") + " bits")
+        return str(v)
+    if t == "double":
+        if type(v) not in (int, float) or v != v or v in (float("inf"), float("-inf")):
+            raise ValueError("a finite number")
+        s = "%.5f" % float(v)
+        return s[1:] if s == "-0.00000" else s
+    if t == "bool":
+        if type(v) is not bool:
+            raise ValueError("True or False")
+        return "true" if v else "false"
+    if t == "string":
+        if not isinstance(v, str):
+            raise ValueError("a str")
+        return _drv_json.dumps(v, ensure_ascii=False)
+    if not isinstance(v, (list, tuple)):
+        raise ValueError("a list")
+    return "[" + ",".join(_drv_fmt(t[:-2], x) for x in v) + "]"
+
+
+def _drv_main():
+    lines = _drv_sys.stdin.buffer.read().decode("utf-8").split("\n")
+    types = @@PARAM_TYPES@@
+    if len(lines) < len(types):
+        _drv_fail("driver: the test case has too few input lines")
+    args = [_drv_json.loads(lines[i]) for i in range(len(types))]
+    args = [float(a) if t == "double" else a for a, t in zip(args, types)]
+    with _drv_ctx.redirect_stdout(_drv_sys.stderr):  # the student's prints go to stderr
+        result = @@FUNCTION@@(*args)
+    try:
+        out = _drv_fmt(@@RETURN_TYPE@@, result)
+    except ValueError as e:
+        _drv_fail("@@FUNCTION@@ returned %s, but it must return @@RETURN_NAME@@ (%s)"
+                  % (repr(result)[:200], e))
+    _drv_sys.stdout.buffer.write((out + "\n").encode("utf-8"))
+    _drv_sys.stdout.flush()
+
+
+_drv_main()

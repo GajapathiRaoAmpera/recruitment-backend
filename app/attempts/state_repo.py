@@ -37,7 +37,7 @@ async def coding_questions_for(session: AsyncSession, test_id: UUID) -> list[dic
     (`is_sample = false`) are never selected here."""
     result = await session.execute(
         text(
-            "select q.id, q.body, q.marks from test_questions tq "
+            "select q.id, q.body, q.marks, q.mode, q.signature from test_questions tq "
             "join questions q on q.id = tq.question_id "
             "where tq.test_id = :t and q.kind = 'coding' order by tq.position"
         ),

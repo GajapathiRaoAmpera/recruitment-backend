@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.execution.function_mode.signature import Signature
+
 
 class QuestionOut(BaseModel):
     """A multiple-choice question (kept as it was; `kind` is new and always "mcq")."""
@@ -25,6 +27,8 @@ class SampleCase(BaseModel):
 
     input: str
     expected: str
+    # function mode: "nums = [1,2,3], target = 5"; stdin mode: the same text as `input`
+    input_display: str | None = None
 
 
 class CodingQuestionOut(BaseModel):
@@ -35,6 +39,9 @@ class CodingQuestionOut(BaseModel):
     marks: float
     languages: list[LanguageOut]
     samples: list[SampleCase]  # at most 3
+    mode: Literal["stdin", "function"] = "stdin"
+    signature: Signature | None = None  # function mode only
+    starter_code: dict[str, str] | None = None  # function mode: {language key: empty stub}
 
 
 class SavedCode(BaseModel):

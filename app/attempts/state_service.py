@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.attempts import state_repo as repo
 from app.attempts.state_schemas import AttemptOut, CodingQuestionOut, SubmitOut
 from app.core.errors import AppError
-from app.execution.languages import LANGUAGES
+from app.execution.function_mode.student import coding_fields
 
 MAX_TAB_SWITCHES = 3
 
@@ -33,8 +33,7 @@ async def state(session: AsyncSession, attempt_id: UUID, candidate_id: UUID) -> 
             title=_title(q["body"]),
             statement=q["body"],
             marks=q["marks"],
-            languages=[{"key": k, "name": v.name} for k, v in LANGUAGES.items()],
-            samples=q["samples"],
+            **coding_fields(q),  # mode, signature, starter_code, languages, samples
         )
         for q in await repo.coding_questions_for(session, row["test_id"])
     ]

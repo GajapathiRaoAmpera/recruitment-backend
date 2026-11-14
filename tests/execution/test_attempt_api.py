@@ -1,5 +1,6 @@
 """POST /attempt/run and /attempt/submit-code (FR-16, AC-5). DB and Judge0 are fakes."""
 
+import json
 import uuid
 
 import pytest
@@ -39,10 +40,12 @@ class FakeJudge0:
 
     def __init__(self):
         self.calls = []
+        self.sources = []
         self.fail = None
 
     async def run_many(self, language, source, stdins):
         self.calls.append(list(stdins))
+        self.sources.append(source)
         if self.fail:
             raise self.fail
         return [ran(s) for s in stdins]
@@ -62,6 +65,7 @@ def env(monkeypatch):
         loads=[],
         session=FakeSession(),
         judge0=FakeJudge0(),
+        signature=None,  # stdin question; a dict makes it a function-mode question
     )
 
     async def get_attempt(_, attempt_id):
@@ -82,6 +86,14 @@ def env(monkeypatch):
 
     monkeypatch.setattr(repo, "get_attempt", get_attempt)
     monkeypatch.setattr(repo, "is_coding_question_of_attempt", in_test)
+
+    async def function_signature(_, question_id):
+        return env_signature()
+
+    def env_signature():
+        return state["signature"]
+
+    monkeypatch.setattr(repo, "function_signature", function_signature)
     monkeypatch.setattr(repo, "load_cases", load_cases)
     monkeypatch.setattr(repo, "save_submission", save)
     app.dependency_overrides[get_session] = lambda: state["session"]
@@ -261,3 +273,39 @@ def test_an_attempt_the_deadline_already_submitted_says_expired_not_locked(env):
     env["attempt"] = {"status": "submitted", "past_deadline": True, "auto_submitted": False}
     r = c.post("/api/v1/attempt/run", json=BODY)
     assert (r.status_code, r.json()["error"]["code"]) == (409, "ATTEMPT_LOCKED")
+
+
+# --- function mode ---------------------------------------------------------------------------
+
+TWO_SUM = {
+    "function_name": "twoSum",
+    "parameters": [{"name": "nums", "type": "int[]"}, {"name": "target", "type": "int"}],
+    "return_type": "int[]",
+}
+FN_CODE = "def twoSum(nums, target):\n    return [0, 1]\n"
+
+
+def test_stdin_question_sends_the_students_code_unchanged(env):
+    post("run")
+    post("submit-code")
+    assert env["judge0"].sources == [BODY["code"], BODY["code"]]
+
+
+@pytest.mark.parametrize("path", ["run", "submit-code"])
+def test_function_question_runs_student_code_first_then_the_hidden_driver(env, path):
+    env["signature"] = json.dumps(TWO_SUM)  # jsonb as text, as asyncpg returns it
+    r = post(path, {**BODY, "code": FN_CODE})
+    assert r.status_code == 200, r.text
+    [source] = env["judge0"].sources
+    assert source.startswith(FN_CODE) and "_drv_main()" in source and len(source) > len(FN_CODE)
+    assert "_drv" not in r.text and "driver" not in r.text  # the driver never leaves the server
+    if path == "submit-code":  # the saved answer is the student's code alone
+        assert env["saved"] == [(CTX.attempt_id, QID, FN_CODE, "python", 18, 18)]
+
+
+@pytest.mark.parametrize("path", ["run", "submit-code"])
+def test_sql_is_refused_for_a_function_question(env, path):
+    env["signature"] = TWO_SUM
+    r = post(path, {**BODY, "code": "select 1;", "language": "sql"})
+    assert r.status_code == 422 and r.json()["error"]["code"] == "LANGUAGE_NOT_ALLOWED"
+    assert env["judge0"].calls == [] and env["saved"] == []

@@ -169,10 +169,22 @@ def test_coding_question_has_title_statement_languages_and_only_sample_cases():
     STATE["coding"] = [CODING]
     body = client.get("/api/v1/attempt", headers=attempt()).json()
     q = next(x for x in body["questions"] if x["kind"] == "coding")
-    assert set(q) == {"kind", "id", "title", "statement", "marks", "languages", "samples"}
+    assert set(q) == {
+        "kind",
+        "id",
+        "title",
+        "statement",
+        "marks",
+        "languages",
+        "samples",
+        "mode",
+        "signature",
+        "starter_code",  # function-mode fields (null for stdin questions)
+    }
     assert q["title"] == "Two Sum" and q["statement"].startswith("Two Sum")
     assert {"key": "python", "name": "Python 3.8"} in q["languages"]
-    assert len(q["samples"]) == 3 and set(q["samples"][0]) == {"input", "expected"}
+    assert len(q["samples"]) == 3
+    assert set(q["samples"][0]) == {"input", "expected", "input_display"}
     assert all(x["kind"] == "mcq" for x in body["questions"] if x is not q and "options" in x)
 
 

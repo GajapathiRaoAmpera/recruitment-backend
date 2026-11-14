@@ -125,6 +125,8 @@ def db(monkeypatch):
             created_at=NOW,
             reference_solution=ref.get("reference_solution"),
             reference_language=ref.get("reference_language"),
+            mode=ref.get("mode", "stdin"),
+            signature=ref.get("signature"),
         )
         questions[row["id"]] = row
         return row

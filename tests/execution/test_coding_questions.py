@@ -50,8 +50,12 @@ def db(monkeypatch):
     questions, case_rows, audits, state = {}, {}, [], {"answers": False}
     session = FakeSession()
 
-    async def insert_question(_, owner, body_, difficulty, tags, marks):
+    async def insert_question(
+        _, owner, body_, difficulty, tags, marks, mode="stdin", signature=None
+    ):
         row = dict(
+            mode=mode,
+            signature=signature,
             id=uuid.uuid4(),
             body=body_,
             difficulty=difficulty,

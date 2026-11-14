@@ -8,6 +8,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.execution.function_mode import values
+from app.execution.function_mode.signature import Mode, Signature
+
 Difficulty = Literal["easy", "medium", "advanced"]
 
 SAMPLE_CASES = 3
@@ -43,6 +46,28 @@ def _check_cases(cases: list[CaseIn]) -> list[CaseIn]:
     return cases
 
 
+def canonical_cases(signature: Signature, cases: list[CaseIn]) -> list[CaseIn]:
+    """Function mode: each input must hold one value per parameter and each expected one
+    return value; both are stored in the canonical form the drivers read (values.py).
+    Raises ValueError naming the case."""
+    out = []
+    for i, c in enumerate(cases, start=1):
+        try:
+            inp = values.canonical_input(signature, c.input)
+            exp = values.canonical_expected(signature, c.expected)
+        except ValueError as e:
+            raise ValueError(f"test case {i}: {e}") from None
+        out.append(CaseIn(input=inp, expected=exp, is_sample=c.is_sample))
+    return out
+
+
+def _check_mode(mode: str, signature: Signature | None) -> None:
+    if mode == "function" and signature is None:
+        raise ValueError("a function-mode question needs a signature")
+    if mode == "stdin" and signature is not None:
+        raise ValueError("signature is only for mode 'function'")
+
+
 def _clean_tags(tags: list[str]) -> list[str]:
     cleaned = list(dict.fromkeys(t.strip() for t in tags if t.strip()))  # keeps order, no dupes
     if len(cleaned) > MAX_TAGS or any(len(t) > 40 for t in cleaned):
@@ -58,6 +83,8 @@ class CodingQuestionIn(BaseModel):
     difficulty: Difficulty
     tags: list[str] = []
     marks: Decimal = Field(default=Decimal(1), gt=0, le=999, decimal_places=2)
+    mode: Mode = "stdin"
+    signature: Signature | None = None  # required for (and only for) mode "function"
     test_cases: list[CaseIn]
 
     @field_validator("body")
@@ -77,9 +104,18 @@ class CodingQuestionIn(BaseModel):
     def _cases(cls, v: list[CaseIn]) -> list[CaseIn]:
         return _check_cases(v)
 
+    @model_validator(mode="after")
+    def _function_mode(self) -> "CodingQuestionIn":
+        _check_mode(self.mode, self.signature)
+        if self.signature is not None:
+            self.test_cases = canonical_cases(self.signature, self.test_cases)
+        return self
+
 
 class CodingQuestionPatch(BaseModel):
-    """Only the fields sent change. `test_cases`, when sent, replaces the whole set."""
+    """Only the fields sent change. `test_cases`, when sent, replaces the whole set.
+    `mode: "stdin"` clears the signature; `mode: "function"` needs a signature (sent now, or
+    already stored). The service checks the resulting mode / signature / cases together."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -88,6 +124,8 @@ class CodingQuestionPatch(BaseModel):
     tags: list[str] | None = None
     marks: Decimal | None = Field(default=None, gt=0, le=999, decimal_places=2)
     approved: bool | None = None
+    mode: Mode | None = None
+    signature: Signature | None = None
     test_cases: list[CaseIn] | None = None
 
     @field_validator("tags")
@@ -99,6 +137,12 @@ class CodingQuestionPatch(BaseModel):
     @classmethod
     def _cases(cls, v: list[CaseIn] | None) -> list[CaseIn] | None:
         return None if v is None else _check_cases(v)
+
+    @model_validator(mode="after")
+    def _mode_and_signature(self) -> "CodingQuestionPatch":
+        if self.mode == "stdin" and "signature" in self.model_fields_set:
+            raise ValueError("signature is only for mode 'function'")
+        return self
 
     @model_validator(mode="after")
     def _something_to_change(self) -> "CodingQuestionPatch":
@@ -130,6 +174,8 @@ class CodingQuestionOut(BaseModel):
     # AI questions: the program whose Judge0 stdout became `expected`. Null for manual ones.
     reference_solution: str | None = None
     reference_language: str | None = None
+    mode: Mode = "stdin"
+    signature: Signature | None = None  # set exactly when mode is "function"
     test_cases: list[CaseOut]
 
 
@@ -143,6 +189,7 @@ class GenerateIn(BaseModel):
     tags: list[str] = []
     marks: Decimal = Field(default=Decimal(1), gt=0, le=999, decimal_places=2)
     count: int = Field(default=1, ge=1, le=3)
+    mode: Mode = "stdin"  # "function": the model also writes the signature
 
     @field_validator("topic")
     @classmethod

@@ -34,6 +34,15 @@ async def is_coding_question_of_attempt(
     return rows.first() is not None
 
 
+async def function_signature(session: AsyncSession, question_id: UUID):
+    """The question's signature (raw jsonb) when it is a function-mode question, else None."""
+    rows = await session.execute(
+        text("select signature from questions where id = :q and mode = 'function'"),
+        {"q": question_id},
+    )
+    return rows.scalar_one_or_none()
+
+
 async def load_cases(
     session: AsyncSession, question_id: UUID, *, samples_only: bool
 ) -> list[CaseSpec]:

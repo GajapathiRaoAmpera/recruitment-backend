@@ -189,8 +189,10 @@ async def _story(engine) -> None:
         assert coding[0]["marks"] == 10
         samples = [c_ for c_ in sum_cases() if c_.is_sample]
         assert coding[0]["samples"] == [
-            {"input": c_.input, "expected": c_.expected} for c_ in samples
+            {"input": c_.input, "expected": c_.expected, "input_display": c_.input}
+            for c_ in samples
         ]
+        assert coding[0]["mode"] == "stdin" and coding[0]["starter_code"] is None
         assert "python" in {lang["key"] for lang in coding[0]["languages"]}
         for hidden in (c_ for c_ in sum_cases() if not c_.is_sample):
             assert hidden.input not in state.text  # inputs of hidden cases never reach a student

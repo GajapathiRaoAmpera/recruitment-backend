@@ -1,14 +1,20 @@
 """AI drafts of Round 2 coding questions (POST /questions/generate).
 
-The LLM writes the problem, a Python reference solution and the 18 stdin inputs. It never
+The LLM writes the problem, a Python reference solution and the 18 inputs. It never
 writes the expected outputs: the reference solution is run on our Judge0 for every input and
 its stdout becomes the expected output. A question whose reply is not schema-valid, or whose
 reference solution fails on any input, is retried once with the error fed back, then dropped.
 
 The NVIDIA client (key, retries, shared rate limit) is Round 1's, imported read-only from
 app.papers.agents. API keys never reach logs, errors or responses.
+
+Mode "function" (LeetCode-style): the model also writes the signature, the reference solution
+is a Python *function*, and each input is a JSON object of parameter values. Inputs are
+stored in the canonical format (function_mode/values.py), and the reference runs through the
+same fixed Python driver students' code runs through, so its stdout is the canonical answer.
 """
 
+import ast
 import asyncio
 import json
 import logging
@@ -20,6 +26,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     ValidationError,
     field_validator,
     model_validator,
@@ -34,6 +41,9 @@ from app.execution.coding_questions.schemas import (
     SAMPLE_CASES,
     CaseIn,
 )
+from app.execution.function_mode import values
+from app.execution.function_mode.drivers import build_source
+from app.execution.function_mode.signature import MAX_PARAMETERS, Signature
 from app.execution.judge0 import ACCEPTED, Judge0Client, RunResult
 from app.papers.agents import LlmClient, LlmOutputError, NvidiaClient
 
@@ -117,6 +127,126 @@ class GeneratedCodingQuestion(BaseModel):
     def inputs(self) -> list[str]:
         return [*self.sample_inputs, *self.hidden_inputs]
 
+    @property
+    def mode(self) -> str:
+        return "stdin"
+
+    @property
+    def signature(self) -> Signature | None:
+        return None
+
+    @property
+    def source(self) -> str:
+        """What runs on Judge0 to produce the expected outputs."""
+        return self.reference_solution
+
+
+_STDIN_WORDING = re.compile(r"\b(stdin|standard input|stdout|standard output)\b", re.IGNORECASE)
+
+
+class GeneratedFunctionQuestion(BaseModel):
+    """One model reply for a function-mode question. Validated strictly before anything runs:
+    the signature (allowed types, valid names), the reference function, every input."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    title: str = Field(min_length=1, max_length=MAX_TITLE_CHARS)
+    statement: str = Field(min_length=1)
+    signature: Signature
+    reference_solution: str = Field(min_length=1, max_length=MAX_SOLUTION_CHARS)
+    sample_inputs: list[dict] = Field(min_length=SAMPLE_CASES, max_length=SAMPLE_CASES)
+    hidden_inputs: list[dict] = Field(min_length=HIDDEN_CASES, max_length=HIDDEN_CASES)
+    _inputs: list[str] = PrivateAttr(default_factory=list)
+
+    @field_validator("title")
+    @classmethod
+    def _one_line_title(cls, v: str) -> str:
+        v = v.strip()
+        if not v or "\n" in v:
+            raise ValueError("title must be one non-blank line")
+        return v
+
+    @field_validator("statement", "reference_solution")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must not be blank")
+        return v.strip("\n")
+
+    @field_validator("statement")
+    @classmethod
+    def _no_stdin_wording(cls, v: str) -> str:
+        if _STDIN_WORDING.search(v):
+            raise ValueError(
+                "statement must describe parameters and the return value, not stdin/stdout"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _whole(self) -> "GeneratedFunctionQuestion":
+        if len(self.body) > MAX_BODY_CHARS:
+            raise ValueError(f"title + statement is longer than {MAX_BODY_CHARS} characters")
+        _check_reference_function(self.reference_solution, self.signature)
+        inputs = []
+        for i, args in enumerate([*self.sample_inputs, *self.hidden_inputs]):
+            try:
+                text = values.canonical_args(self.signature, args)
+            except ValueError as e:
+                raise ValueError(f"{_where(i)}: {e}") from None
+            if len(text) > MAX_INPUT_CHARS:
+                raise ValueError(f"{_where(i)} is longer than {MAX_INPUT_CHARS} characters")
+            inputs.append(text)
+        if len(set(inputs)) != len(inputs):
+            raise ValueError("all 18 inputs must be different")
+        self._inputs = inputs
+        return self
+
+    @property
+    def body(self) -> str:
+        return f"{self.title}\n{self.statement}"
+
+    @property
+    def inputs(self) -> list[str]:
+        """Canonical stored inputs (one line per parameter)."""
+        return list(self._inputs)
+
+    @property
+    def mode(self) -> str:
+        return "function"
+
+    @property
+    def source(self) -> str:
+        return build_source(REFERENCE_LANGUAGE, self.signature, self.reference_solution)
+
+
+def _check_reference_function(code: str, sig: Signature) -> None:
+    """A top-level `def <function_name>(<one positional parameter per signature parameter>)`,
+    and no reading of input (the driver passes the values in)."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        raise ValueError(
+            f"reference_solution is not valid Python: {e.msg} (line {e.lineno})"
+        ) from None
+    defs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == sig.function_name]
+    if not defs:
+        raise ValueError(f"reference_solution must define a top-level function {sig.function_name}")
+    a = defs[-1].args
+    if (
+        a.vararg
+        or a.kwarg
+        or a.kwonlyargs
+        or len(a.posonlyargs) + len(a.args) != len(sig.parameters)
+    ):
+        raise ValueError(
+            f"{sig.function_name} must take exactly the parameters {', '.join(sig.names)}"
+        )
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == "input":
+            raise ValueError("reference_solution must not call input(); it gets parameters")
+        if isinstance(node, ast.Attribute) and node.attr == "stdin":
+            raise ValueError("reference_solution must not read stdin; it gets parameters")
+
 
 # --------------------------------------------------------------------------------------------
 # Prompt
@@ -164,6 +294,51 @@ Rules:
   the inputs you write (for example N <= 50, values <= 10^6)."""
 
 
+FUNCTION_SYSTEM_PROMPT = f"""You write LeetCode-style programming problems for a campus hiring
+coding test. Students write ONE function in Python, JavaScript, C, C++, Java or Go. The judge
+calls it with each test's values and compares the value it returns exactly.
+
+Write ONE original problem and reply with JSON only, exactly this shape:
+{{"title": "...", "statement": "...",
+  "signature": {{"function_name": "twoSum",
+                "parameters": [{{"name": "nums", "type": "int[]"}},
+                               {{"name": "target", "type": "int"}}],
+                "return_type": "int[]"}},
+  "reference_solution": "def twoSum(nums, target):\\n    ...",
+  "sample_inputs": [{{"nums": [2, 7, 11, 15], "target": 9}}, ... exactly {SAMPLE_CASES} objects],
+  "hidden_inputs": [... exactly {HIDDEN_CASES} objects]}}
+
+Rules:
+- title: short, one line, at most {MAX_TITLE_CHARS} characters.
+- statement: plain text with these parts: the task, "Parameters" (what each parameter means),
+  "Returns" (what the function returns), "Constraints". Describe the input as the function's
+  parameters and the output as its return value. NEVER mention reading input, stdin, printing,
+  stdout or input/output formats. Do NOT include worked examples or expected outputs: the
+  sample inputs are shown to students with results computed by running your solution.
+- signature.function_name: lowerCamelCase with at least two words, e.g. maxProfit.
+- signature.parameters: 1 to {MAX_PARAMETERS} parameters, names in lowerCamelCase (nums, target,
+  grid, words), never a keyword of Python, JavaScript, C, C++, Java or Go.
+- Types: ONLY int (32-bit), long (64-bit), double, bool, string, int[], string[], int[][].
+  Use long when a value or the result can exceed 2147483647. A double result is compared
+  rounded to 5 decimal places: say "rounded to 5 decimal places" in the statement.
+- Every input has exactly ONE correct return value. If several answers could be valid, add a
+  rule that picks one (for example "return the smallest index").
+- reference_solution: a correct Python 3.8 FUNCTION named exactly function_name, taking the
+  parameters in order (lists arrive as lists, strings as str, bool as bool), returning an
+  int / float / bool / str / list. Standard library only; imports at the top are fine. No
+  class wrapper, no input(), no print, no files, no randomness. Nothing newer than Python 3.8:
+  no match statements, no list[int] type hints. It must finish in well under a second.
+- sample_inputs: exactly {SAMPLE_CASES} small, readable inputs. hidden_inputs: exactly
+  {HIDDEN_CASES} inputs that test correctness: smallest values, edge cases (empty arrays or
+  strings if the constraints allow them, duplicates, negatives, zeros, all equal, single
+  element), and a few larger ones.
+- Each input is a JSON object with every parameter name as a key and a value of the right
+  JSON type: numbers, true/false, "strings", [arrays]. You cannot run code: write every value
+  out literally, never expressions, so even the largest input holds at most about 50 numbers.
+  long values stay within 9007199254740991 in absolute value. The reply must be valid JSON.
+- All 18 inputs are different and fit the constraints in the statement."""
+
+
 def build_user_prompt(
     *,
     difficulty: str,
@@ -205,7 +380,7 @@ def _ordinal(i: int) -> str:
 class Draft:
     """A question that passed every check, ready to save."""
 
-    question: GeneratedCodingQuestion
+    question: GeneratedCodingQuestion | GeneratedFunctionQuestion
     cases: list[CaseIn]
 
 
@@ -223,7 +398,9 @@ def _where(i: int) -> str:
     return f"sample input {i + 1}" if i < SAMPLE_CASES else f"hidden input {i - SAMPLE_CASES + 1}"
 
 
-def check_runs(q: GeneratedCodingQuestion, runs: list[RunResult]) -> tuple[str, str] | None:
+def check_runs(
+    q: GeneratedCodingQuestion | GeneratedFunctionQuestion, runs: list[RunResult]
+) -> tuple[str, str] | None:
     """(reason for HR, feedback for the model) when the reference solution is not usable."""
     for i, r in enumerate(runs):
         where = _where(i)
@@ -270,9 +447,12 @@ async def generate_one(
     index: int,
     count: int,
     avoid: Sequence[str],
+    mode: str = "stdin",
 ) -> Draft:
     """Provider errors (AppError) propagate; bad output or a failing solution raises
     QuestionFailed after ATTEMPTS tries."""
+    system = FUNCTION_SYSTEM_PROMPT if mode == "function" else SYSTEM_PROMPT
+    model = GeneratedFunctionQuestion if mode == "function" else GeneratedCodingQuestion
     feedback: str | None = None
     reason = "no attempt made"
     for attempt in range(1, ATTEMPTS + 1):
@@ -285,7 +465,7 @@ async def generate_one(
             feedback=feedback,
         )
         try:
-            raw = await llm.complete_json(system=SYSTEM_PROMPT, user=user)
+            raw = await llm.complete_json(system=system, user=user)
         except LlmOutputError as e:
             reason = "model reply was not valid JSON"
             feedback = "Your reply was not a single valid JSON object. Reply with JSON only."
@@ -296,7 +476,7 @@ async def generate_one(
             log.info("question %d attempt %d: %s", index, attempt, reason)
             continue
         try:
-            q = GeneratedCodingQuestion.model_validate(raw)
+            q = model.model_validate(raw)
         except ValidationError as e:
             problems = "; ".join(
                 f"{'.'.join(map(str, err['loc'])) or 'reply'}: {err['msg']}" for err in e.errors()
@@ -306,7 +486,7 @@ async def generate_one(
             log.info("question %d attempt %d: invalid reply", index, attempt)
             continue
         try:
-            runs = await judge0.run_many(REFERENCE_LANGUAGE, q.reference_solution, q.inputs)
+            runs = await judge0.run_many(REFERENCE_LANGUAGE, q.source, q.inputs)
         except AppError as e:
             if e.code != "EXECUTION_TIMEOUT":
                 raise  # Judge0 down: the whole request stops
@@ -348,6 +528,7 @@ async def generate_many(
     count: int,
     avoid: Sequence[str],
     budget_s: float = BUDGET_S,
+    mode: str = "stdin",
 ) -> tuple[list[Draft], list[Failure]]:
     """Generate `count` questions in parallel. Returns the good ones (in request order, title
     duplicates dropped) and one Failure per question that did not make it. Judge0 being
@@ -365,6 +546,7 @@ async def generate_many(
                     index=i,
                     count=count,
                     avoid=avoid,
+                    mode=mode,
                 )
         except QuestionFailed as e:
             return Failure(i, e.reason)
