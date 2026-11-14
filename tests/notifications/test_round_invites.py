@@ -38,3 +38,9 @@ def test_send_all_logs_failures_and_skips_when_unconfigured(monkeypatch):
     monkeypatch.setattr(ri.email, "configured", lambda: True)
     asyncio.run(ri.send_all(mails))  # one failure doesn't stop the rest
     assert sent == ["ok@x.com"]
+
+
+def test_paper_ready_email():
+    _, subject, body, html = ri.compose({**ROW, "round_type": "aptitude"}, False, LINK, ready=True)
+    assert subject == "Your Aptitude test is ready: SDE at Ampera"
+    assert "question paper" in body and LINK in body and "Your Aptitude test is ready" in html

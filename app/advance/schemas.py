@@ -44,6 +44,9 @@ class AdvanceIn(BaseModel):
 
     threshold: float = Field(ge=0, le=100)  # percent
     finalize_locked: bool = False  # submit tab-switch-locked attempts with the marks they have
+    # mark students who never started absent; without it they block advance (a round advanced
+    # right after the paper was sent would otherwise fail everyone, and can't be undone)
+    mark_absent: bool = False
 
 
 class InvitedOut(BaseModel):

@@ -54,7 +54,7 @@ def db(monkeypatch):
               cand("Dev", status=None)],
         expired=[], next=dict(id=NEXT, type="coding", status="pending"), already=set(),
         submitted=[], reopened=[], saved=None, completed=None, opened=[], invited=[],
-        audits=[], commits=0, locks=[],
+        audits=[], commits=0, locks=[], coding_questions=2,
     )  # fmt: skip
 
     async def get_round(_, rid, owner, lock=False):
@@ -96,6 +96,10 @@ def db(monkeypatch):
     async def open_round(_, rid):
         state["opened"].append(rid)
 
+    async def coding_question_count(_, rid):
+        assert rid == NEXT
+        return state["coding_questions"]
+
     async def invite(_, rid, ids):
         state["invited"].append((rid, ids))
         return [i for i in ids if i not in state["already"]]
@@ -111,6 +115,7 @@ def db(monkeypatch):
     ).items():  # fmt: skip
         monkeypatch.setattr(repo, name, fn)
     monkeypatch.setattr(state_repo, "submit", submit)
+    monkeypatch.setattr(service.attempts_repo, "coding_question_count", coding_question_count)
     monkeypatch.setattr(service, "audit", audit)
     app.dependency_overrides[get_session] = lambda: FakeSession(state)
     yield state
@@ -133,21 +138,29 @@ def names(state, status):
 def test_both_routes_need_a_staff_login(db):
     c = TestClient(app)
     assert c.get(f"{API}/{ROUND}/ranking").status_code == 401
-    assert c.post(f"{API}/{ROUND}/advance", json={"threshold": 50}).status_code == 401
+    assert (
+        c.post(f"{API}/{ROUND}/advance", json={"mark_absent": True, "threshold": 50}).status_code
+        == 401
+    )
 
 
 def test_other_hr_and_unknown_round_get_404(db):
     for user, rid in ((OTHER_HR, ROUND), (HR, uuid.uuid4())):
         r = as_user(user).get(f"{API}/{rid}/ranking")
         assert r.status_code == 404 and r.json()["error"]["code"] == "ROUND_NOT_FOUND"
-        r = as_user(user).post(f"{API}/{rid}/advance", json={"threshold": 50})
+        r = as_user(user).post(f"{API}/{rid}/advance", json={"mark_absent": True, "threshold": 50})
         assert r.status_code == 404 and r.json()["error"]["code"] == "ROUND_NOT_FOUND"
     assert db["saved"] is None and db["audits"] == [] and db["commits"] == 0
 
 
 def test_super_admin_sees_every_drive(db):
     assert as_user(ADMIN).get(f"{API}/{ROUND}/ranking").status_code == 200
-    assert as_user(ADMIN).post(f"{API}/{ROUND}/advance", json={"threshold": 50}).status_code == 200
+    assert (
+        as_user(ADMIN)
+        .post(f"{API}/{ROUND}/advance", json={"mark_absent": True, "threshold": 50})
+        .status_code
+        == 200
+    )
     assert db["audits"][0]["actor"] == ADMIN.id
 
 
@@ -155,7 +168,7 @@ def test_interview_round_is_not_ranked(db):
     db["round"]["type"] = "ai_interview"
     r = as_user(HR).get(f"{API}/{ROUND}/ranking")
     assert r.status_code == 409 and r.json()["error"]["code"] == "ROUND_HAS_NO_TEST"
-    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"threshold": 50})
+    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"mark_absent": True, "threshold": 50})
     assert r.status_code == 409 and r.json()["error"]["code"] == "ROUND_HAS_NO_TEST"
 
 
@@ -220,7 +233,7 @@ def test_preview_of_a_completed_round_writes_nothing(db):
 
 
 def test_advance_marks_results_completes_and_invites_the_passed(db, no_candidate_mail):
-    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"threshold": 60})
+    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"mark_absent": True, "threshold": 60})
     assert r.status_code == 200, r.text
     out = r.json()
     asha = db["rows"][0]
@@ -256,13 +269,21 @@ def test_advance_marks_results_completes_and_invites_the_passed(db, no_candidate
 
 def test_already_invited_students_are_not_listed_twice(db):
     db["already"] = {db["rows"][0]["candidate_id"]}
-    out = as_user(HR).post(f"{API}/{ROUND}/advance", json={"threshold": 60}).json()
+    out = (
+        as_user(HR)
+        .post(f"{API}/{ROUND}/advance", json={"mark_absent": True, "threshold": 60})
+        .json()
+    )
     assert out["passed"] == 1 and out["invited"] == []
 
 
 def test_last_round_just_finishes(db):
     db["next"] = None
-    out = as_user(HR).post(f"{API}/{ROUND}/advance", json={"threshold": 60}).json()
+    out = (
+        as_user(HR)
+        .post(f"{API}/{ROUND}/advance", json={"mark_absent": True, "threshold": 60})
+        .json()
+    )
     assert out["next_round_id"] is None and out["invited"] == []
     assert db["opened"] == [] and db["invited"] == [] and db["completed"] == Decimal("60.00")
     assert db["commits"] == 1
@@ -275,21 +296,26 @@ def test_last_round_just_finishes(db):
 )  # fmt: skip
 def test_only_an_active_round_advances(db, status, code):
     db["round"]["status"] = status
-    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"threshold": 60})
+    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"mark_absent": True, "threshold": 60})
     assert r.status_code == 409 and r.json()["error"]["code"] == code
     assert db["saved"] is None and db["commits"] == 0 and db["audits"] == []
 
 
 def test_second_advance_is_refused(db):
-    assert as_user(HR).post(f"{API}/{ROUND}/advance", json={"threshold": 60}).status_code == 200
-    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"threshold": 60})
+    assert (
+        as_user(HR)
+        .post(f"{API}/{ROUND}/advance", json={"mark_absent": True, "threshold": 60})
+        .status_code
+        == 200
+    )
+    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"mark_absent": True, "threshold": 60})
     assert r.status_code == 409 and r.json()["error"]["code"] == "ROUND_ALREADY_ADVANCED"
     assert db["commits"] == 1 and len(db["audits"]) == 1
 
 
 def test_student_still_writing_blocks_advance(db):
     db["rows"].append(cand("Busy", status="in_progress", marks=None))
-    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"threshold": 60})
+    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"mark_absent": True, "threshold": 60})
     assert r.status_code == 409
     err = r.json()["error"]
     assert err["code"] == "ROUND_STILL_RUNNING"
@@ -303,7 +329,11 @@ def test_past_deadline_attempts_are_finalized_then_ranked(db):
     late = cand("Late", status="in_progress", marks=7)
     db["rows"].append(late)
     db["expired"] = [late["attempt_id"]]
-    out = as_user(HR).post(f"{API}/{ROUND}/advance", json={"threshold": 60}).json()
+    out = (
+        as_user(HR)
+        .post(f"{API}/{ROUND}/advance", json={"mark_absent": True, "threshold": 60})
+        .json()
+    )
     assert db["submitted"] == [late["attempt_id"]]
     assert out["passed"] == 2 and names(db, "passed") == {"Asha", "Late"}
     assert db["audits"][0]["diff"]["finalized_expired"] == [late["attempt_id"]]
@@ -312,7 +342,7 @@ def test_past_deadline_attempts_are_finalized_then_ranked(db):
 def test_locked_attempt_blocks_advance_with_the_list(db):
     lock = cand("Lock", status="locked", marks=None)
     db["rows"].append(lock)
-    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"threshold": 60})
+    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"mark_absent": True, "threshold": 60})
     assert r.status_code == 409
     err = r.json()["error"]
     assert err["code"] == "LOCKED_ATTEMPTS"
@@ -326,8 +356,31 @@ def test_locked_attempt_blocks_advance_with_the_list(db):
 def test_finalize_locked_submits_them_through_the_normal_submit(db):
     lock = cand("Lock", status="locked", marks=9)
     db["rows"].append(lock)
-    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"threshold": 60, "finalize_locked": True})
+    r = as_user(HR).post(
+        f"{API}/{ROUND}/advance",
+        json={"mark_absent": True, "threshold": 60, "finalize_locked": True},
+    )
     assert r.status_code == 200, r.text
     assert db["reopened"] == [lock["attempt_id"]] and db["submitted"] == [lock["attempt_id"]]
     assert names(db, "passed") == {"Asha", "Lock"}
     assert db["audits"][0]["diff"]["finalized_locked"] == [lock["attempt_id"]]
+
+
+def test_students_who_never_started_block_advance_until_hr_marks_them_absent(db):
+    """Advancing right after sending the paper would fail everyone: refused by default."""
+    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"threshold": 60})
+    assert r.status_code == 409
+    err = r.json()["error"]
+    assert err["code"] == "NOT_STARTED" and err["details"]["counts"]["absent"] == 1
+    assert db["saved"] is None and db["commits"] == 0 and db["audits"] == []
+    assert db["round"]["status"] == "active"  # still open: students can still sit it
+
+
+def test_next_coding_round_without_questions_blocks_advance(db):
+    """Advancing emails the passed students to start the next round: an empty coding test can't."""
+    db["coding_questions"] = 0
+    r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"mark_absent": True, "threshold": 60})
+    assert r.status_code == 409
+    err = r.json()["error"]
+    assert err["code"] == "NEXT_ROUND_NOT_READY" and err["details"]["next_round_id"] == str(NEXT)
+    assert db["saved"] is None and db["opened"] == [] and db["commits"] == 0

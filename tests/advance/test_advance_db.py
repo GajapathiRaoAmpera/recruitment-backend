@@ -122,6 +122,10 @@ class World:
         )
         return row["id"]
 
+    async def ready_coding(self, round_id) -> None:
+        """Advancing into a coding round (and starting it) needs its questions set up."""
+        await self.coding_on_test(await self.test(round_id), 10)
+
     async def attempt(
         self, test_id, cid, status="submitted", *, marks=None, secs=None, paper=(),
         answers=None, deadline_min=30,
@@ -170,7 +174,8 @@ class World:
 
     async def advance(self, round_id, threshold, **extra) -> httpx.Response:
         return await self.c.post(
-            f"{API}/rounds/{round_id}/advance", json={"threshold": threshold, **extra}
+            f"{API}/rounds/{round_id}/advance",
+            json={"threshold": threshold, "mark_absent": True, **extra},
         )
 
 
@@ -281,6 +286,7 @@ def test_other_hr_gets_404_and_super_admin_sees_it():
 def test_advance_saves_results_opens_next_round_and_audits():
     async def story(w: World):
         _, apt, cod, fin = await w.drive(STANDARD)
+        await w.ready_coding(cod)
         t = await w.test(apt)
         q = await w.mcq(10)
         top, edge, low = [await w.student(n, apt) for n in ("Top", "Edge", "Low")]
@@ -331,6 +337,7 @@ def test_advance_saves_results_opens_next_round_and_audits():
 def test_still_writing_refuses_and_saves_nothing():
     async def story(w: World):
         _, apt, cod, _ = await w.drive(STANDARD)
+        await w.ready_coding(cod)
         t = await w.test(apt)
         q = await w.mcq(1)
         done, busy = await w.student("Done", apt), await w.student("Busy", apt)
@@ -351,6 +358,7 @@ def test_still_writing_refuses_and_saves_nothing():
 def test_past_deadline_attempt_is_finalized_by_the_real_submit():
     async def story(w: World):
         _, apt, cod, _ = await w.drive(STANDARD)
+        await w.ready_coding(cod)
         t = await w.test(apt)
         q1, q2 = await w.mcq(5), await w.mcq(5)
         late = await w.student("Late", apt)
@@ -387,6 +395,7 @@ def test_past_deadline_attempt_is_finalized_by_the_real_submit():
 def test_locked_attempt_refuses_until_hr_finalizes_it():
     async def story(w: World):
         _, apt, cod, _ = await w.drive(STANDARD)
+        await w.ready_coding(cod)
         t = await w.test(apt)
         q = await w.mcq(4)
         lock = await w.student("Lock", apt)
@@ -465,6 +474,7 @@ def test_pending_round_is_refused():
 def test_round1_submit_advance_login_and_start_round2():
     async def story(w: World):
         _, apt, cod, _ = await w.drive(STANDARD)
+        await w.ready_coding(cod)
         t = await w.test(apt)
         q1, q2 = await w.mcq(1), await w.mcq(1)
         good, bad = await w.student("Good", apt), await w.student("Bad", apt)
