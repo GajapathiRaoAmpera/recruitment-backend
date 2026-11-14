@@ -17,7 +17,6 @@ depends_on = None
 # Embedding size 384 = settings.embedding_dim (all-MiniLM-L6-v2, run locally with fastembed);
 # changing it needs a new migration that rebuilds question_embeddings.
 UPGRADE = [
-    "create extension if not exists vector",
     """
     create table question_sources (
       id                uuid primary key default gen_random_uuid(),
@@ -44,17 +43,10 @@ UPGRADE = [
     "alter table questions add column source_number int",
     # parse warnings kept with the question; 'approve all clean' skips non-empty ones
     "alter table questions add column warnings text[] not null default '{}'",
-    """
-    create table question_embeddings (
-      question_id  uuid primary key references questions(id) on delete cascade,
-      embedding    vector(384) not null,
-      model        text not null
-    )""",
     "create index questions_source_id_idx on questions (source_id)",
     "create index questions_subject_idx on questions (subject)",
     # D8: RLS on, no policies -> anon/authenticated keys read nothing; API uses the service role.
     "alter table question_sources enable row level security",
-    "alter table question_embeddings enable row level security",
 ]
 
 DOWNGRADE = [

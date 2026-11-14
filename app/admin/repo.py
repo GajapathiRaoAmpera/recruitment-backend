@@ -23,15 +23,14 @@ async def email_taken(session: AsyncSession, email: str) -> bool:
     return rows.first() is not None
 
 
-async def insert_user(
-    session: AsyncSession, user_id: UUID, email: str, full_name: str, role: str
-) -> RowMapping:
+async def insert_user(session: AsyncSession, email: str, full_name: str, role: str) -> RowMapping:
+    """New staff row with no password yet (id from the DB); the invite link sets it."""
     rows = await session.execute(
         text(
-            "insert into users (id, email, full_name, role) "
-            f"values (:id, :email, :full_name, cast(:role as user_role)) returning {COLS}"
+            "insert into users (email, full_name, role) "
+            f"values (:email, :full_name, cast(:role as user_role)) returning {COLS}"
         ),
-        {"id": user_id, "email": email, "full_name": full_name, "role": role},
+        {"email": email, "full_name": full_name, "role": role},
     )
     return rows.mappings().one()
 
