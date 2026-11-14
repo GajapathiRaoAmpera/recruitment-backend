@@ -16,6 +16,26 @@ class StaffUser(BaseModel):
     role: Role
 
 
+class LoginIn(BaseModel):
+    email: str
+    password: str
+
+
+class LoginOut(BaseModel):
+    access_token: str
+    expires_in: int  # seconds
+    user: StaffUser
+
+
+class ForgotIn(BaseModel):
+    email: str
+
+
+class SetPasswordIn(BaseModel):
+    token: str
+    password: str
+
+
 class VerifyIn(BaseModel):
     student_id: str
     dob: date

@@ -31,6 +31,9 @@ select = ["E", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Integration tests need a running Judge0 (`make judge0-up`); run them with `make test-judge0`
+addopts = "-m 'not integration'"
+markers = ["integration: needs a running Judge0; skipped by default"]
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI's dependency style puts these calls in argument defaults by design
