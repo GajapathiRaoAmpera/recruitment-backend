@@ -204,3 +204,16 @@ def test_send_persists_bank_derived_questions_with_source_tag():
     # the copy never points questions.source_id (the bank FILE) at the bank: no such column set
     assert "insert into questions (id, kind, body, options, answer, tags," in sql
     assert "source_id," not in sql.split("select")[0]
+
+
+def test_progress_total_counts_real_questions_not_percent():
+    """The bar reads 'done / total questions', so total must be a question count, not 100."""
+    settings = make_settings()
+    events: list[tuple[int, int]] = []
+    build(settings, events=events)
+    want = needed(settings)
+    f = settings.pool_factor
+    coded = sum(want[lv][s] * (f + 1) for lv in LEVELS for s in ("aptitude", "reasoning"))
+    tech = sum(want[lv]["technical"] * f + 1 for lv in LEVELS if want[lv]["technical"])
+    assert events[0] == (0, coded + tech)
+    assert (coded, coded + tech) in events  # code generators finish before the AI starts
