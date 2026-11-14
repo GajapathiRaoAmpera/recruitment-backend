@@ -219,7 +219,7 @@ def test_preview_of_a_completed_round_writes_nothing(db):
 # ---- advance --------------------------------------------------------------------------------
 
 
-def test_advance_marks_results_completes_and_invites_the_passed(db):
+def test_advance_marks_results_completes_and_invites_the_passed(db, no_candidate_mail):
     r = as_user(HR).post(f"{API}/{ROUND}/advance", json={"threshold": 60})
     assert r.status_code == 200, r.text
     out = r.json()
@@ -231,6 +231,7 @@ def test_advance_marks_results_completes_and_invites_the_passed(db):
                      "name": "Asha"}],
     }  # fmt: skip
     assert db["locks"] == [True]  # the round row is locked for the whole transaction
+    assert no_candidate_mail == [(NEXT, [asha["candidate_id"]], False)]  # passed are emailed
     assert names(db, "passed") == {"Asha"}
     assert names(db, "failed") == {"Ben", "Cara"}
     assert names(db, "absent") == {"Dev"}

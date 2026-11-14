@@ -60,7 +60,7 @@ def db(monkeypatch):
             raise IntegrityError("delete", {}, Exception("fk violation"))
         users.pop(uid)
 
-    async def send_email(to, subject, body):
+    async def send_email(to, subject, body, html=None):
         invites.append((to, body))
 
     async def audit(_, actor_id, action, entity, entity_id, diff=None):

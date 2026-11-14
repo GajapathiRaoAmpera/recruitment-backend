@@ -15,6 +15,7 @@ from app.core import email
 from app.core.audit import audit
 from app.core.config import get_settings
 from app.core.errors import AppError
+from app.core.mail_template import render
 
 log = logging.getLogger(__name__)
 
@@ -30,19 +31,29 @@ def set_password_link(user_id: UUID, password_set_at: datetime | None, ttl: int)
     return f"{get_settings().frontend_url.rstrip('/')}/set-password?token={token}"
 
 
-def invite_email(full_name: str, link: str) -> tuple[str, str]:
+def invite_email(full_name: str, link: str) -> tuple[str, str, str]:
+    """(subject, text, html)."""
+    intro = "You've been added to Ampera Campus Hire. Set your password to sign in."
+    note = "This link works once, for 72 hours. If you weren't expecting this, ignore this email."
     return (
         "Your Ampera Campus Hire account",
-        f"Hi {full_name},\n\nYou've been added to Ampera Campus Hire. "
-        f"Set your password here (the link works once, for 72 hours):\n\n{link}\n",
+        f"Hi {full_name},\n\n{intro}\n\n{link}\n\n{note}\n",
+        render(
+            "Welcome to Campus Hire", f"Hi {full_name},", [intro], "Set your password", link, note
+        ),
     )
 
 
-def reset_email(full_name: str, link: str) -> tuple[str, str]:
+def reset_email(full_name: str, link: str) -> tuple[str, str, str]:
+    """(subject, text, html)."""
+    intro = "We got a request to reset your Ampera Campus Hire password."
+    note = "This link works once, for 1 hour. If you didn't ask for this, ignore this email."
     return (
         "Reset your Ampera Campus Hire password",
-        f"Hi {full_name},\n\nSet a new password here (the link works once, for 1 hour):\n\n"
-        f"{link}\n\nIf you didn't ask for this, ignore this email.",
+        f"Hi {full_name},\n\n{intro} Set a new one here:\n\n{link}\n\n{note}\n",
+        render(
+            "Reset your password", f"Hi {full_name},", [intro], "Set a new password", link, note
+        ),
     )
 
 
@@ -73,8 +84,8 @@ async def login(session: AsyncSession, body: LoginIn) -> LoginOut:
     )
 
 
-async def reset_link_for(session: AsyncSession, address: str) -> tuple[str, str, str] | None:
-    """(to, subject, body) of a reset email, or None for an unknown/inactive address."""
+async def reset_link_for(session: AsyncSession, address: str) -> tuple[str, str, str, str] | None:
+    """(to, subject, text, html) of a reset email, or None for an unknown/inactive address."""
     row = await repo.get_login(session, address)
     if row is None or not row["is_active"]:
         return None
@@ -82,10 +93,10 @@ async def reset_link_for(session: AsyncSession, address: str) -> tuple[str, str,
     return (row["email"], *reset_email(row["full_name"], link))
 
 
-async def send_quietly(to: str, subject: str, body: str) -> None:
+async def send_quietly(to: str, subject: str, body: str, html: str | None = None) -> None:
     """Background send for forgot-password: the caller already got 204, so only log failures."""
     try:
-        await email.send_email(to, subject, body)
+        await email.send_email(to, subject, body, html)
     except AppError as e:
         log.warning("reset email not sent: %s", e.code)
 

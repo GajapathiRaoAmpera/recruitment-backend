@@ -63,7 +63,7 @@ def db(monkeypatch):
     async def set_password(_, uid, h):
         users[uid].update(password_hash=h, password_set_at=datetime.now(UTC), locked_until=None)
 
-    async def send_email(to, subject, body):
+    async def send_email(to, subject, body, html=None):
         sent.append((to, body))
 
     async def audit(_, actor, action, entity, entity_id, diff=None):
