@@ -17,6 +17,7 @@ from app.execution.test_config.router import router as test_config_router
 from app.integrity.router import router as integrity_router
 from app.interviews.router import router as interviews_router
 from app.papers.router import router as papers_router
+from app.reports.router import router as reports_router
 
 app = FastAPI(title="Ampera Campus Hire API", version="0.1.0")
 install_error_handlers(app)
@@ -45,6 +46,7 @@ api.include_router(results_router)
 api.include_router(integrity_router)
 api.include_router(advance_router)
 api.include_router(interviews_router)
+api.include_router(reports_router)
 app.include_router(api)
 
 
