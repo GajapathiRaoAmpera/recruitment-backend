@@ -48,6 +48,7 @@ def ctx(**kw):
         "jd_text": "Build APIs",
         "full_name": "Asha Rao",
         "skills": ["Python"],
+        "cgpa": 8.4,
         "turns": len(S["transcript"]),
         **kw,
     }
@@ -123,6 +124,14 @@ def fakes(monkeypatch):
     async def overrides(*_):
         return {}
 
+    async def earlier_results(_, r, c):
+        CALLS["history_for"] = (r, c)
+        return [
+            {"kind": "mcq", "topic": "Probability", "marks": 0},
+            {"kind": "coding", "body": "Two Sum\nFind...", "code": "def f(): pass",
+             "language": "python", "passed_cases": 3, "total_cases": 10},
+        ]  # fmt: skip
+
     async def recent_failures(*_):
         return S.get("failures", 0)
 
@@ -166,6 +175,7 @@ def fakes(monkeypatch):
         (repo, "append_turns", append_turns),
         (repo, "complete", complete),
         (repo, "prompt_overrides", overrides),
+        (repo, "earlier_results", earlier_results),
         (repo, "list_for_hr", list_for_hr),
         (repo, "get_for_hr", get_for_hr),
         (repo, "owned", owned),
@@ -251,6 +261,10 @@ def test_session_starts_clock_and_mints_locked_token():
     assert body["client_config"]["sessionResumption"] == {}
     assert body["protocol"]["closing_phrase"] == "That concludes our interview."
     assert CALLS["mint"]["expire_at"] == NOW + timedelta(minutes=45)
+    # FR AI interview: earlier rounds shape the questions, server side only
+    assert CALLS["history_for"] == (RID, CID)
+    assert "Probability 0/1" in instruction and "Two Sum" in instruction
+    assert "CGPA: 8.4" in instruction and "Two Sum" not in r.text
 
 
 def test_session_after_reload_resumes_with_earlier_turns():
