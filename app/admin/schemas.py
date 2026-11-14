@@ -39,3 +39,29 @@ class UserCreated(UserOut):
 class UserPage(BaseModel):
     items: list[UserOut]
     next_cursor: str | None = None
+
+
+class AuditLogOut(BaseModel):
+    id: int
+    created_at: datetime
+    actor_id: UUID | None
+    actor_name: str | None  # null when the row has no actor
+    actor_email: str | None
+    actor_role: Role | None
+    action: str  # e.g. round.advance, user.update
+    entity: str
+    entity_id: str | None
+    diff: dict | list | None
+
+
+class AuditLogPage(BaseModel):
+    items: list[AuditLogOut]
+    next_cursor: str | None = None
+    total: int  # rows matching the filters, across all pages
+
+
+class AuditSummary(BaseModel):
+    total: int
+    last_24h: int
+    actors: int  # distinct people with at least one event
+    access_changes: int  # user.* events: invites, role/active changes, deletions

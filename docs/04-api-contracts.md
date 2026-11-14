@@ -96,7 +96,9 @@ Standalone entry: the student opens `/interview`, signs in with Student ID + DOB
 | DELETE | `/admin/users/{id}` | SA | → 204 · removes the `users` row and the Supabase Auth account · 409 `SUPER_ADMIN_PROTECTED` (Super Admins are deactivate-only) · 409 `USER_IN_USE` when drives/audit history/questions reference the user (deactivate instead) · 409 `CANNOT_CHANGE_SELF` · 404 · 502 `AUTH_PROVIDER_ERROR` (nothing changed) |
 | GET/PUT | `/admin/ai-prompts/{key}` | SA |
 | GET/PUT | `/admin/settings` | SA |
-| GET | `/admin/audit-logs` | SA |
+| GET | `/admin/audit-logs` | SA | query `actor_id?` (uuid), `action?` (exact code, e.g. `round.advance`), `q?` (≤ 200 chars; case-insensitive substring of action, entity, entity_id, actor name or email), `since?` / `until?` (ISO datetimes; `created_at >= since` and `< until`), `limit` (1-200, default 50), `cursor?` → `{items:[{id, created_at, actor_id\|null, actor_name\|null, actor_email\|null, actor_role\|null, action, entity, entity_id\|null, diff\|null}], next_cursor\|null, total}` (`total` = rows matching the filters, all pages) · newest first (by `id`); `next_cursor` = last `id` of the page, pass it back for the next one · read only, not audited · 422 `BAD_CURSOR` / `VALIDATION_ERROR` |
+| GET | `/admin/audit-logs/summary` | SA | → `{total, last_24h, actors, access_changes}` · whole log, no filters · `actors` = distinct people with an event · `access_changes` = `user.*` events |
+| GET | `/admin/audit-logs/actions` | SA | → `[action]` · every distinct action code in the log, A-Z (for the page's Action filter) |
 
 ## Papers (Round 1)
 Prefix `/api/v1/papers`. All routes need **HR** (Super Admin passes). HR sees only drafts they own; Super Admin sees all. A draft owned by someone else returns the same `404 NOT_FOUND` as a missing one. Every mutation is audited. JSON is snake_case. Plan of record: `07-round1-paper-builder-implementation-plan.md`.
