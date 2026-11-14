@@ -1,9 +1,9 @@
 name: CI
 on:
   pull_request:
-    branches: [main, pre-prod]
+    branches: [main]
   push:
-    branches: [main, pre-prod]
+    branches: [main]
 permissions:
   contents: read
 concurrency:

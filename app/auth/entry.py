@@ -28,7 +28,7 @@ class Entry:
 
 def _decode(token: str) -> dict:
     try:
-        # HS256: we issue and verify; the key is derived from JWT_SECRET, separate from staff tokens
+        # HS256 is fine: we issue and verify (the no-HS256 rule is for Supabase JWTs)
         claims = jwt.decode(
             token,
             get_settings().entry_signing_key,

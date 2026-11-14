@@ -6,7 +6,7 @@
   expected output or stdout leaves this module; `SubmitResult` has no field that could hold it.
 
 No database here: the caller loads the cases (hidden ones only in this path) and passes them in.
-Marks (question marks x passed / total, no level weighting) are stored by repo.save_submission.
+Level weighting of the score is an open decision, so the score is the plain pass count.
 """
 
 from collections import Counter

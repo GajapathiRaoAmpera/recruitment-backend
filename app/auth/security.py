@@ -1,6 +1,7 @@
-"""HR/Admin auth: verify our staff JWT, then load the role from `users` (never from claims)."""
+"""HR/Admin auth: verify the Supabase JWT, then load the role from `users` (never from claims)."""
 
-import time
+import asyncio
+from functools import lru_cache
 from uuid import UUID
 
 import jwt
@@ -14,37 +15,38 @@ from app.core.config import get_settings
 from app.core.db import get_session
 from app.core.errors import AppError
 
-STAFF_TTL = 8 * 3600  # one working day; sign in again after
+# Asymmetric only: accepting HS256 here would allow algorithm-confusion attacks.
+ALGORITHMS = ["ES256", "RS256"]
 
 bearer = HTTPBearer(auto_error=False)
 
 
-def issue_token(typ: str, sub: UUID, ttl: int, **extra) -> str:
-    claims = {"typ": typ, "sub": str(sub), "exp": int(time.time()) + ttl, **extra}
-    return jwt.encode(claims, get_settings().jwt_secret, algorithm="HS256")
+@lru_cache
+def _jwks_client() -> jwt.PyJWKClient:
+    url = get_settings().supabase_url.rstrip("/")
+    return jwt.PyJWKClient(f"{url}/auth/v1/.well-known/jwks.json", lifespan=600)
 
 
-def decode_token(token: str, typ: str) -> dict:
-    """Claims of a valid, unexpired token of this type, else 401 (staff and set-password share
-    the key, so `typ` is what stops one being used as the other)."""
-    try:
-        claims = jwt.decode(
-            token,
-            get_settings().jwt_secret,
-            algorithms=["HS256"],  # pinned: never let the token pick its algorithm
-            options={"require": ["exp", "sub", "typ"]},
-        )
-        if claims["typ"] != typ:
-            raise jwt.InvalidTokenError("wrong token type")
-        UUID(claims["sub"])
-        return claims
-    except (jwt.PyJWTError, ValueError) as e:
-        raise AppError(401, "INVALID_TOKEN", "Sign in again") from e
+async def _signing_key(token: str):
+    # PyJWKClient uses blocking urllib on a cache miss; keep it off the event loop
+    return (await asyncio.to_thread(_jwks_client().get_signing_key_from_jwt, token)).key
 
 
 async def verify_token(token: str) -> UUID:
-    """Return the user id (sub) of a valid staff token, else raise 401."""
-    return UUID(decode_token(token, "staff")["sub"])
+    """Return the Supabase user id (sub) of a valid token, else raise 401."""
+    url = get_settings().supabase_url.rstrip("/")
+    try:
+        claims = jwt.decode(
+            token,
+            await _signing_key(token),
+            algorithms=ALGORITHMS,
+            audience="authenticated",
+            issuer=f"{url}/auth/v1",
+            options={"require": ["exp", "sub"]},
+        )
+        return UUID(claims["sub"])
+    except (jwt.PyJWTError, ValueError) as e:
+        raise AppError(401, "INVALID_TOKEN", "Sign in again") from e
 
 
 async def current_user(

@@ -1,13 +1,16 @@
 """FR-27 / AC-1: Super Admin manages staff users; HR cannot."""
 
+import asyncio
+import json
 import uuid
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
 
-from app.admin import repo, service
+from app.admin import repo, service, supabase_admin
 from app.auth import security
 from app.auth.schemas import StaffUser
 from app.core.db import get_session
@@ -32,7 +35,7 @@ class FakeSession:
 @pytest.fixture
 def db(monkeypatch):
     users = {u.id: {**u.model_dump(), "is_active": True, "created_at": NOW} for u in (ADMIN, HR)}
-    audits, invites, in_use = [], [], set()
+    audits, invites, sb_deleted, in_use = [], [], [], set()
     session = FakeSession()
 
     async def list_users(_):
@@ -44,8 +47,7 @@ def db(monkeypatch):
     async def email_taken(_, email):
         return any(u["email"].lower() == email.lower() for u in users.values())
 
-    async def insert_user(_, email, full_name, role):
-        uid = uuid.uuid4()
+    async def insert_user(_, uid, email, full_name, role):
         users[uid] = dict(
             id=uid, email=email, full_name=full_name, role=role, is_active=True, created_at=NOW
         )
@@ -60,8 +62,12 @@ def db(monkeypatch):
             raise IntegrityError("delete", {}, Exception("fk violation"))
         users.pop(uid)
 
-    async def send_email(to, subject, body, html=None):
-        invites.append((to, body))
+    async def sb_delete(uid):
+        sb_deleted.append(uid)
+
+    async def invite(email, full_name, send_email=True):
+        invites.append((email, full_name))
+        return uuid.uuid4(), None if send_email else "https://x.supabase.co/auth/v1/verify?token=t"
 
     async def audit(_, actor_id, action, entity, entity_id, diff=None):
         audits.append((actor_id, action, entity_id, diff))
@@ -75,7 +81,8 @@ def db(monkeypatch):
         delete_user=delete_user,
     ).items():
         monkeypatch.setattr(repo, name, fn)
-    monkeypatch.setattr(service.email, "send_email", send_email)
+    monkeypatch.setattr(supabase_admin, "invite_user", invite)
+    monkeypatch.setattr(supabase_admin, "delete_user", sb_delete)
     monkeypatch.setattr(service, "audit", audit)
     app.dependency_overrides[get_session] = lambda: session
     yield dict(
@@ -83,6 +90,7 @@ def db(monkeypatch):
         audits=audits,
         invites=invites,
         session=session,
+        sb_deleted=sb_deleted,
         in_use=in_use,
     )
     app.dependency_overrides.clear()
@@ -120,9 +128,7 @@ def test_create_hr_invites_inserts_audits(db):
     assert r.status_code == 201
     body = r.json()
     assert body["role"] == "hr" and body["full_name"] == "New Person" and body["is_active"]
-    [(to, mail)] = db["invites"]
-    assert to == "new@x.com" and "Hi New Person" in mail
-    assert "http://localhost:3000/set-password?token=" in mail
+    assert db["invites"] == [("new@x.com", "New Person")]
     assert db["audits"][0][:2] == (ADMIN.id, "user.create")
     assert db["session"].commits == 1
 
@@ -133,10 +139,8 @@ def test_create_with_link_returns_it_once_and_never_audits_it(db):
         json={"email": "link@x.com", "full_name": "Link", "send_email": False},
     )
     assert r.status_code == 201
-    link = r.json()["invite_link"]
-    assert link.startswith("http://localhost:3000/set-password?token=")
-    assert db["invites"] == []  # nothing emailed
-    assert "token" not in str(db["audits"])
+    assert r.json()["invite_link"].startswith("https://")
+    assert "verify" not in str(db["audits"])
 
 
 def test_create_with_email_has_no_link(db):
@@ -149,7 +153,7 @@ def test_super_admin_cannot_be_deleted(db):
     db["users"][other] = {**db["users"][ADMIN.id], "id": other, "email": "sa2@x.com"}
     r = as_user(ADMIN).delete(f"/api/v1/admin/users/{other}")
     assert r.status_code == 409 and r.json()["error"]["code"] == "SUPER_ADMIN_PROTECTED"
-    assert other in db["users"]
+    assert other in db["users"] and db["sb_deleted"] == []
 
 
 def test_create_duplicate_skips_invite(db):
@@ -196,10 +200,10 @@ def test_patch_unknown_404(db):
     assert r.status_code == 404
 
 
-def test_delete_unused_user_removes_row(db):
+def test_delete_unused_user_removes_row_and_supabase_account(db):
     r = as_user(ADMIN).delete(f"/api/v1/admin/users/{HR.id}")
     assert r.status_code == 204
-    assert HR.id not in db["users"]
+    assert HR.id not in db["users"] and db["sb_deleted"] == [HR.id]
     assert db["audits"][0][1:3] == ("user.delete", HR.id) and db["session"].commits == 1
 
 
@@ -208,7 +212,7 @@ def test_delete_user_in_use_409_and_untouched(db):
     r = as_user(ADMIN).delete(f"/api/v1/admin/users/{HR.id}")
     assert r.status_code == 409 and r.json()["error"]["code"] == "USER_IN_USE"
     assert "Deactivate" in r.json()["error"]["message"]
-    assert HR.id in db["users"] and db["session"].commits == 0
+    assert HR.id in db["users"] and db["sb_deleted"] == [] and db["session"].commits == 0
 
 
 def test_cannot_delete_yourself(db):
@@ -220,11 +224,97 @@ def test_delete_unknown_404(db):
     assert as_user(ADMIN).delete(f"/api/v1/admin/users/{uuid.uuid4()}").status_code == 404
 
 
-def test_invite_email_failure_creates_nothing(db, monkeypatch):
-    async def boom(*_):
-        raise AppError(502, "EMAIL_FAILED", "down")
+def test_supabase_failure_commits_nothing(db, monkeypatch):
+    async def boom(_):
+        raise AppError(502, "AUTH_PROVIDER_ERROR", "down")
 
-    monkeypatch.setattr(service.email, "send_email", boom)
-    r = as_user(ADMIN).post("/api/v1/admin/users", json={"email": "n@x.com", "full_name": "N"})
-    assert r.status_code == 502 and r.json()["error"]["code"] == "EMAIL_FAILED"
-    assert db["session"].commits == 0  # the inserted row is rolled back with the session
+    monkeypatch.setattr(supabase_admin, "delete_user", boom)
+    r = as_user(ADMIN).delete(f"/api/v1/admin/users/{HR.id}")
+    assert r.status_code == 502 and db["session"].commits == 0
+
+
+# --- the Supabase admin calls themselves ---
+
+
+@pytest.fixture
+def supabase(monkeypatch):
+    seen = {}
+    real = httpx.AsyncClient
+
+    def use(status, body):
+        def handler(request):
+            seen["request"] = request
+            return httpx.Response(status, json=body)
+
+        monkeypatch.setattr(
+            supabase_admin.httpx,
+            "AsyncClient",
+            lambda **kw: real(transport=httpx.MockTransport(handler), **kw),
+        )
+        return seen
+
+    return use
+
+
+def test_invite_sends_secret_server_side_and_redirect(supabase):
+    uid = uuid.uuid4()
+    seen = supabase(200, {"id": str(uid)})
+    assert asyncio.run(supabase_admin.invite_user("a@x.com", "A")) == (uid, None)
+    req = seen["request"]
+    assert req.url.path == "/auth/v1/invite"
+    assert req.headers["apikey"] == "sb_secret_test"
+    assert req.url.params["redirect_to"] == "http://localhost:3000/set-password"
+
+
+@pytest.mark.parametrize(
+    "status,body,code",
+    [
+        (422, {"error_code": "email_exists"}, "USER_EXISTS"),
+        (429, {}, "EMAIL_RATE_LIMIT"),
+        (500, {}, "AUTH_PROVIDER_ERROR"),
+    ],
+)
+def test_invite_errors(supabase, status, body, code):
+    supabase(status, body)
+    with pytest.raises(AppError) as e:
+        asyncio.run(supabase_admin.invite_user("a@x.com", "A"))
+    assert e.value.code == code
+
+
+@pytest.mark.parametrize("status", [204, 200, 404])
+def test_supabase_delete_ok_or_already_gone(supabase, status):
+    uid = uuid.uuid4()
+    seen = supabase(status, {})
+    asyncio.run(supabase_admin.delete_user(uid))
+    assert seen["request"].method == "DELETE"
+    assert seen["request"].url.path == f"/auth/v1/admin/users/{uid}"
+
+
+def test_supabase_delete_error_502(supabase):
+    supabase(500, {})
+    with pytest.raises(AppError) as e:
+        asyncio.run(supabase_admin.delete_user(uuid.uuid4()))
+    assert e.value.code == "AUTH_PROVIDER_ERROR"
+
+
+def test_invite_error_keeps_supabase_reason(supabase):
+    supabase(500, {"error_code": "unexpected_failure", "msg": "Error sending invite email"})
+    with pytest.raises(AppError) as e:
+        asyncio.run(supabase_admin.invite_user("a@x.com", "A"))
+    assert e.value.message == "Supabase couldn't create the account: Error sending invite email"
+    assert e.value.details == {"provider_status": 500}
+
+
+def test_generate_link_creates_user_without_email(supabase):
+    uid = uuid.uuid4()
+    link = "https://x.supabase.co/auth/v1/verify?token=abc&type=invite"
+    seen = supabase(200, {"id": str(uid), "email": "a@x.com", "action_link": link})
+    assert asyncio.run(supabase_admin.invite_user("a@x.com", "A", send_email=False)) == (uid, link)
+    req = seen["request"]
+    assert req.url.path == "/auth/v1/admin/generate_link"
+    assert json.loads(req.content) == {
+        "type": "invite",
+        "email": "a@x.com",
+        "data": {"full_name": "A"},
+        "redirect_to": "http://localhost:3000/set-password",
+    }

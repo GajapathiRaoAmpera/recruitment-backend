@@ -646,19 +646,6 @@ def plan_batches(
     ]
 
 
-def _progress_units(settings: PaperSettings, sections: Sequence[Section]) -> tuple[int, int]:
-    """(planned questions, reserve units) that generate_pool's progress total is built from."""
-    want = _wanted(settings, sections)
-    planned = sum(p.count for p in plan_batches(settings, sections))
-    reserve = sum(1 for level in LEVELS for section in SECTIONS if want[level][section] > 0)
-    return planned, reserve
-
-
-def progress_total(settings: PaperSettings, sections: Sequence[Section] = SECTIONS) -> int:
-    """The fixed `total` generate_pool reports, known before it starts."""
-    return sum(_progress_units(settings, sections))
-
-
 async def generate_pool(
     generator: LlmClient,
     settings: PaperSettings,
@@ -678,7 +665,8 @@ async def generate_pool(
     """
     want = _wanted(settings, sections)
     plans = plan_batches(settings, sections)
-    planned, reserve = _progress_units(settings, sections)
+    planned = sum(p.count for p in plans)
+    reserve = sum(1 for level in LEVELS for section in SECTIONS if want[level][section] > 0)
     total = planned + reserve
     done = 0
     topup_total = topup_done = 0  # questions asked / finished in the top-up round

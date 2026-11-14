@@ -47,16 +47,13 @@ def bearer(token):
 @pytest.fixture(autouse=True)
 def fakes(monkeypatch):
     CALLS.clear()
-    CALLS.update(
-        missing=[], existing=None, invited=True, open=True, has_questions=True, paper=None,
-        type="aptitude", coding=0,
-    )  # fmt: skip
+    CALLS.update(missing=[], existing=None, invited=True, open=True, has_questions=True, paper=None)
 
     async def invite(_, c, r):
         return {"candidate_id": c} if CALLS["invited"] and (c, r) == (CID, RID) else None
 
     async def startable(_, c, r):
-        return {"id": RID, "type": CALLS["type"], "minutes": 45.0} if CALLS["open"] else None
+        return {"id": RID, "type": "aptitude", "minutes": 45.0} if CALLS["open"] else None
 
     async def find(*_):
         return CALLS["existing"]
@@ -87,11 +84,6 @@ def fakes(monkeypatch):
     async def link(_, attempt_id, rows):
         CALLS["linked"] = (attempt_id, rows)
 
-    async def coding_question_count(_, r):
-        assert r == RID
-        return CALLS["coding"]
-
-    monkeypatch.setattr(repo, "coding_question_count", coding_question_count)
     monkeypatch.setattr(repo, "has_questions", has_questions)
     monkeypatch.setattr(repo, "sent_paper", sent_paper)
     monkeypatch.setattr(repo, "link_questions", link)
@@ -313,15 +305,6 @@ def test_start_refused_when_no_paper_was_sent_to_the_student():
     r = start()
     assert r.status_code == 409 and r.json()["error"]["code"] == "PAPER_NOT_READY"
     assert "linked" not in CALLS and "commit" not in CALLS  # nothing saved, attempt rolled back
-
-
-def test_coding_round_with_no_questions_is_not_ready_and_one_with_questions_starts():
-    CALLS.update(type="coding", coding=0)
-    r = start()
-    assert r.status_code == 409 and r.json()["error"]["code"] == "PAPER_NOT_READY"
-    assert "commit" not in CALLS  # the empty attempt is rolled back
-    CALLS.update(coding=2)
-    assert start().status_code == 200
 
 
 def test_sent_paper_decodes_only_the_json_columns(monkeypatch):
