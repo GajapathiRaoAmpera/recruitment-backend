@@ -474,6 +474,8 @@ def test_typed_answer_keeps_code_indentation_and_language():
         {"role": "candidate", "kind": "question", "text": "x"},  # only the AI asks
         {"role": "candidate", "kind": "typed", "text": "x" * 8001},
         {"role": "candidate", "kind": "spoken", "text": "x" * 2001},
+        {"role": "candidate", "kind": "flag", "text": "x"},  # only the interviewer flags
+        {"role": "ai", "kind": "flag", "text": "x" * 2001},
     ],
 )
 def test_typed_turn_rules(turn):

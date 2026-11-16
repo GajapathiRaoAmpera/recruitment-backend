@@ -162,7 +162,8 @@ def test_override_replaces_default():
         jd="",
         overrides={"interview_system": "Custom for {name}"},
     )
-    assert text == "Custom for N"
+    # the override replaces the prompt; the platform rules are still added after it
+    assert text == "Custom for N" + prompts.PLATFORM_RULES
 
 
 def test_long_transcript_keeps_start_and_end():
@@ -278,6 +279,9 @@ async def test_token_config_declares_the_answer_box_tool(key):
     decl = tools[0]["functionDeclarations"][0]
     assert decl["name"] == "show_answer_box"
     assert decl["parameters"]["required"] == ["question", "mode"]
+    flag = tools[0]["functionDeclarations"][1]
+    assert flag["name"] == "flag_concern"
+    assert flag["parameters"]["properties"]["kind"]["enum"] == ["multiple_voices"]
 
 
 def test_prompt_explains_the_answer_box_and_adds_reference_only_when_given():
@@ -349,5 +353,48 @@ def test_history_goes_into_default_and_older_overrides():
     old = prompts.build_system_instruction(
         **base, history="BRIEF-X", overrides={"interview_system": "Custom {name}"}
     )
-    assert old == "Custom NBRIEF-X"
+    assert old == "Custom NBRIEF-X" + prompts.PLATFORM_RULES
     assert "{history}" not in prompts.build_system_instruction(**base)
+
+
+# ------------------------------------------------- platform rules, flags, sharper history brief
+
+
+def test_platform_rules_always_close_the_prompt_even_with_an_override():
+    base = dict(company="A", role="R", name="N", minutes=30, skills=[], jd="")
+    for text in (
+        prompts.build_system_instruction(**base),
+        prompts.build_system_instruction(**base, overrides={"interview_system": "Custom {name}"}),
+    ):
+        assert text.endswith(prompts.PLATFORM_RULES)
+        assert "speak ONLY English" in text
+        assert "WAIT for the candidate's typed answer" in text and prompts.TYPED_PREFIX in text
+        assert "do not call show_answer_box again" in text
+        assert "flag_concern" in text and "multiple_voices" in text
+
+
+def test_flags_reach_the_scorer_as_unverified_and_are_not_scored_down():
+    out = prompts.format_transcript(
+        [{"role": "ai", "kind": "flag", "text": "multiple_voices: a second voice read an answer"}]
+    )
+    assert "PLATFORM FLAG (AI-detected, unverified): multiple_voices" in out
+    scorer = prompts.DEFAULT_PROMPTS[prompts.PROMPT_EVAL]
+    assert "do not lower any score because of a flag alone" in scorer
+
+
+def test_history_brief_lists_missed_questions_weakest_first_and_the_problem_statement():
+    rows = [
+        {"kind": "mcq", "topic": "Percentages", "marks": 1, "body": "What is 10% of 50?"},
+        {"kind": "mcq", "topic": "Percentages", "marks": 0, "body": "A price rises 20%..."},
+        {"kind": "mcq", "topic": "Probability", "marks": 0, "body": "Two dice are   rolled..."},
+        {"kind": "mcq", "topic": "Probability", "marks": 0, "body": ""},
+        {"kind": "coding", "body": "Two sum\nGiven an array, return indices " + "y" * 1000,
+         "code": "def f(): pass", "language": "python", "passed_cases": 3, "total_cases": 18},
+    ]  # fmt: skip
+    out = prompts.format_history(rows)
+    assert "Aptitude questions they missed (examples of the gap, no answers):" in out
+    assert out.index("[Probability] Two dice are rolled...") < out.index("[Percentages] A price")
+    assert "What is 10% of 50?" not in out  # answered right: not a gap
+    assert "Problem: Two sum Given an array, return indices" in out
+    assert "y" * prompts.MAX_PROBLEM_CHARS not in out  # statement excerpt is capped
+    assert "time and space complexity" in out and "never read their code" in out

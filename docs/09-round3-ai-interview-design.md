@@ -15,6 +15,13 @@ A shortlisted student talks to an AI interviewer by voice for 35–45 minutes (t
 - HR sees a near-live camera picture of each student in a live interview.
 - HR list and details screens read the real API instead of mock data.
 
+## Interviewer rules added 2026-11-16
+After a test run where the interviewer switched to Hindi and moved on before a typed answer was submitted:
+- **Platform rules** (`prompts.PLATFORM_RULES`) are always appended after the system prompt, also after a Super Admin override, so they can't be lost: English only (reply in English and ask the candidate to continue in English); one written question at a time (after `show_answer_box`, wait for the typed answer, no new question or second box until it is submitted and reviewed); never give a full or alternative solution; flag a second voice.
+- **The browser enforces the wait too**: a second `show_answer_box` while one is open is refused in the tool response, and if the interviewer's captions show an Indian-language script the browser sends a `[PLATFORM]` reminder to continue in English (at most every 20 s).
+- **Possible second voice** (`flag_concern` tool, kind `multiple_voices`): the model calls it when it hears another person; the browser stores it as a transcript turn of kind `flag`. Advisory only: HR sees it in the transcript, the scorer lists it in the summary but does not lower scores for it, and nothing is decided automatically. Detection is the model's own judgement on the audio and will miss some cases.
+- **Sharper brief from rounds 1 and 2**: the aptitude topics (weakest first) now come with up to 6 questions the candidate missed (question text only, never the answer key), and each coding answer includes a 400-character excerpt of the problem statement. The rules ask for at least two questions on the weakest topics and a line-level walk-through of their own coding solution (approach, complexity, failed cases) to cross-check that they understand it.
+
 ## Non-goals
 - Storing audio or video. Camera frames live in server memory only and expire in seconds.
 - Tone-of-voice analysis. Sentiment is read from the transcript text.

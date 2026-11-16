@@ -16,7 +16,7 @@ import httpx
 
 from app.core.config import get_settings
 from app.core.errors import AppError
-from app.interviews.prompts import ANSWER_BOX_TOOL
+from app.interviews.prompts import TOOLS
 
 log = logging.getLogger(__name__)
 
@@ -40,8 +40,8 @@ def live_config(system_instruction: str, voice: str | None) -> dict[str, Any]:
         "contextWindowCompression": {"slidingWindow": {}},
         # each connection lasts ~10 min; the browser reconnects with the latest handle
         "sessionResumption": {},
-        # the interviewer opens a typing box on the candidate's screen for technical questions
-        "tools": [{"functionDeclarations": [ANSWER_BOX_TOOL]}],
+        # the answer box for written questions, and the integrity flag (a possible second voice)
+        "tools": [{"functionDeclarations": list(TOOLS)}],
     }
     if voice and voice.strip():
         config["speechConfig"] = {

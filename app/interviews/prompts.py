@@ -48,6 +48,55 @@ ANSWER_BOX_TOOL: dict = {
     },
 }
 
+# Function the model calls when it notices something HR should check (Live API tool). Advisory only:
+# the browser stores it as a "flag" turn in the transcript, nothing is decided automatically.
+FLAG_TOOL: dict = {
+    "name": "flag_concern",
+    "description": (
+        "Records a note for HR when you notice a possible integrity issue during the interview, "
+        "for example a second voice prompting or answering for the candidate. HR checks it."
+    ),
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "kind": {
+                "type": "STRING",
+                "enum": ["multiple_voices"],
+                "description": "multiple_voices: you hear more than one person speaking",
+            },
+            "note": {
+                "type": "STRING",
+                "description": "One short sentence on what you heard, e.g. a second voice read "
+                "out an answer.",
+            },
+        },
+        "required": ["kind", "note"],
+    },
+}
+TOOLS: tuple[dict, ...] = (ANSWER_BOX_TOOL, FLAG_TOOL)
+
+# Always appended after the (possibly admin-overridden) prompt, so these rules can't be lost by an
+# override: English only, one written question at a time, and the integrity flag.
+PLATFORM_RULES = (
+    "\nPlatform rules (always apply, they override anything above):\n"
+    "- Language: speak ONLY English for the whole interview, every turn, even if the candidate "
+    "uses Hindi or another language. If they do, reply in English and politely ask them to "
+    "continue in English. Never switch languages, never translate into another language.\n"
+    "- One written question at a time: after you call show_answer_box, WAIT for the "
+    "candidate's typed answer (a message starting with " + TYPED_PREFIX + "). Until it "
+    "arrives, do not ask a new question, do not call show_answer_box again and do not move to "
+    "the next topic. If they talk while typing, answer briefly (clarify the question, give a "
+    "small hint) and remind them to type their answer and press Submit. If they say they are "
+    "stuck, ask them to type what they have, even if it is partial, and submit it. Only after "
+    "you have reviewed the submitted answer with them may you move on.\n"
+    "- Never give or describe a full or alternative solution, before or after they submit.\n"
+    "- Integrity: if you clearly hear a second person speaking (prompting, whispering or "
+    "answering for the candidate), call flag_concern with kind multiple_voices and a short "
+    "note, then calmly ask the candidate to make sure they are alone and continue. Do it once "
+    "per incident, do not accuse them, and never mention flags or HR notes aloud.\n"
+    "- Messages starting with " + SYSTEM_TAG + " come from the platform; follow them silently.\n"
+)
+
 # (section, share of the time, what to cover). Shares add up to 1.
 SECTIONS: tuple[tuple[str, float, str], ...] = (
     ("Introduction", 0.08, "greet them, put them at ease, ask them to introduce themselves"),
@@ -78,7 +127,8 @@ DEFAULT_PROMPTS: dict[str, str] = {
         "question the candidate answers in writing. Call the show_answer_box tool with the "
         "question (mode code for programs or queries, text otherwise), then tell them aloud that "
         "a box has opened on their screen and they can type their answer and press Submit. While "
-        "they type, stay quiet unless they speak to you. Their answer arrives as a message "
+        "they type, stay quiet unless they speak to you, and do not ask anything new until the "
+        "answer is submitted. Their answer arrives as a message "
         "starting with " + TYPED_PREFIX + ". Read it carefully and check it: is it correct, "
         "complete and efficient? Ask them to walk you through it, point to the part that has a "
         "problem as a hint (for example: what happens with an empty input?), and let them fix it "
@@ -107,6 +157,9 @@ DEFAULT_PROMPTS: dict[str, str] = {
         "- technical_depth: correctness and depth of knowledge for the role.\n"
         "- problem_solving: approach to the problem, reasoning, use of hints, trade-offs.\n"
         "- culture: ownership, collaboration, curiosity, professionalism.\n"
+        "Lines marked PLATFORM FLAG are unverified observations by the AI interviewer (for "
+        "example a possible second voice): list them in the summary for HR to check, but do not "
+        "lower any score because of a flag alone.\n"
         "Typed answers (code or written) are marked as such: check them for correctness, edge "
         "cases and efficiency; they weigh on technical_depth and problem_solving. Credit fixes the "
         "candidate made after a hint, but less than getting it right first.\n"
@@ -129,14 +182,25 @@ MAX_JD_CHARS = 1500
 MAX_REFERENCE_CHARS = 6000  # role reference material (future: retrieved from HR's PDFs)
 MAX_RESUME_TURNS = 12  # recent turns given to a fresh session after a page reload
 MAX_CODE_CHARS = 1500  # per coding answer in the candidate brief
-MAX_HISTORY_CHARS = 6000
+MAX_HISTORY_CHARS = 8000
+MAX_PROBLEM_CHARS = 400  # coding problem statement excerpt, so the interviewer knows what was asked
+MAX_MISSED = 6  # aptitude questions they missed, shown as examples of weak spots
+MAX_MISSED_CHARS = 200
 
 HISTORY_RULES = (
-    "Use this brief to make the interview specific to this candidate: in the Technical section "
-    "probe their weakest aptitude topics and the skills their resume claims; in Problem solving "
-    "ask them to walk you through their own coding-round solution and the cases it failed. It is "
-    "only for choosing questions: never mention their scores, marks or ranks, never say they got "
-    "something wrong earlier, and judge them only on what they say now.\n"
+    "Use this brief to cross-check the candidate's technical understanding against their "
+    "earlier rounds, precisely:\n"
+    "- Technical section: ask at least two questions on their weakest aptitude topics (the "
+    "missed questions show the kind of gap; ask about the concept, not the same question) and "
+    "probe the skills their resume claims.\n"
+    "- Problem solving section: ask them to explain their own coding-round solution: the "
+    "approach, why they chose it, its time and space complexity, and how they would fix the "
+    "cases it failed. Ask about specific lines so you can tell whether they really understand "
+    "the code they submitted. If they submitted no code, ask how they would approach that "
+    "problem now.\n"
+    "It is only for choosing questions: never mention their scores, marks or ranks, never say "
+    "they got something wrong earlier, never read their code or a missed question back to them "
+    "word for word, and judge them only on what they say now.\n"
 )
 
 
@@ -152,11 +216,17 @@ def format_history(rows: Sequence[Mapping], cgpa=None) -> str:
     """
     topics: dict[str, list[int]] = {}
     coding: list[str] = []
+    missed: list[tuple[str, str]] = []  # (topic, question) the candidate got wrong
     for r in rows:
         if r.get("kind") == "mcq":
-            t = topics.setdefault(str(r.get("topic") or "general"), [0, 0])
-            t[0] += 1 if (r.get("marks") or 0) > 0 else 0
+            topic = str(r.get("topic") or "general")
+            t = topics.setdefault(topic, [0, 0])
+            right = (r.get("marks") or 0) > 0
+            t[0] += 1 if right else 0
             t[1] += 1
+            question = " ".join(str(r.get("body") or "").split())
+            if not right and question:
+                missed.append((topic, question[:MAX_MISSED_CHARS]))
         elif r.get("kind") == "coding":
             code = (r.get("code") or "").strip()[:MAX_CODE_CHARS]
             cases = (
@@ -164,8 +234,10 @@ def format_history(rows: Sequence[Mapping], cgpa=None) -> str:
                 if r.get("total_cases")
                 else "not run"
             )
+            statement = " ".join(str(r.get("body") or "").split())[:MAX_PROBLEM_CHARS]
             coding.append(
                 f"- {_title(r.get('body', ''))} ({r.get('language') or 'no language'}, {cases})\n"
+                + (f"  Problem: {statement}\n" if statement else "")
                 + (f"```\n{code}\n```" if code else "  (no code submitted)")
             )
     parts = []
@@ -177,6 +249,13 @@ def format_history(rows: Sequence[Mapping], cgpa=None) -> str:
             "Aptitude round, correct per topic (weakest first): "
             + "; ".join(f"{k} {c}/{n}" for k, (c, n) in weakest)
         )
+        if missed:
+            rank = {k: i for i, (k, _) in enumerate(weakest)}
+            missed.sort(key=lambda m: rank[m[0]])  # weakest topics first
+            parts.append(
+                "Aptitude questions they missed (examples of the gap, no answers):\n"
+                + "\n".join(f"- [{k}] {q}" for k, q in missed[:MAX_MISSED])
+            )
     if coding:
         parts.append("Coding round, their final answers:\n" + "\n".join(coding))
     if not parts:
@@ -255,7 +334,7 @@ def build_system_instruction(
     template = get_prompt(PROMPT_SYSTEM, overrides)
     if "{history}" not in template:  # older admin overrides predate the brief
         template += "{history}"
-    return _fill(
+    filled = _fill(
         template,
         {
             "history": history,
@@ -270,6 +349,7 @@ def build_system_instruction(
             "reference": reference_block,
         },
     )
+    return filled + PLATFORM_RULES
 
 
 def _line(t: Mapping) -> str:
@@ -277,6 +357,8 @@ def _line(t: Mapping) -> str:
     kind = t.get("kind")
     if kind == "question":
         return f"INTERVIEWER (written question shown on screen): {t.get('text', '')}"
+    if kind == "flag":
+        return f"PLATFORM FLAG (AI-detected, unverified): {t.get('text', '')}"
     if kind == "typed":
         lang = f", {t['language']}" if t.get("language") else ""
         return f"CANDIDATE (typed answer{lang}):\n```\n{t.get('text', '')}\n```"

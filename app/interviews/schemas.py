@@ -56,8 +56,9 @@ class SessionOut(BaseModel):
 class TurnIn(BaseModel):
     role: Literal["ai", "candidate"]
     # spoken = live captions; typed = the candidate's answer box (code or text); question = the
-    # question the interviewer put in the answer box
-    kind: Literal["spoken", "typed", "question"] = "spoken"
+    # question the interviewer put in the answer box; flag = the interviewer's flag_concern note
+    # for HR (e.g. a possible second voice), advisory only
+    kind: Literal["spoken", "typed", "question", "flag"] = "spoken"
     text: str = Field(min_length=1, max_length=MAX_TYPED_CHARS)
     language: str | None = Field(None, max_length=32)  # typed code only, e.g. "python"
     ts: datetime
@@ -79,6 +80,12 @@ class TurnIn(BaseModel):
             raise ValueError("only the candidate types answers")
         if self.kind == "question" and self.role != "ai":
             raise ValueError("only the interviewer asks answer-box questions")
+        if self.kind == "flag":
+            if self.role != "ai":
+                raise ValueError("only the interviewer raises flags")
+            self.text = self.text.strip()
+            if len(self.text) > MAX_TURN_CHARS:
+                raise ValueError(f"a flag is at most {MAX_TURN_CHARS} characters")
         if self.kind != "typed":
             self.language = None
         return self
