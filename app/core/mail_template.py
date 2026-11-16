@@ -10,8 +10,8 @@ def render(
     heading: str,
     greeting: str,
     paragraphs: list[str],
-    button: str,
-    link: str,
+    button: str = "",
+    link: str = "",
     note: str = "",
     details: list[tuple[str, str]] | None = None,
 ) -> str:
@@ -32,6 +32,18 @@ def render(
         f'border-radius:8px"><tr><td style="padding:12px 16px"><table role="presentation" '
         f'width="100%">{rows}</table></td></tr></table>'
         if rows
+        else ""
+    )
+    cta = (  # button + plain-link fallback, only when the email has somewhere to send them
+        f"""<table role="presentation" cellpadding="0" cellspacing="0"><tr>
+<td style="border-radius:8px;background:{MAGENTA}">
+<a href="{e(link)}" style="display:inline-block;padding:12px 24px;font-size:15px;font-weight:600;
+color:#ffffff;text-decoration:none;border-radius:8px">{e(button)}</a></td></tr></table>
+<p style="margin:24px 0 0;font-size:13px;line-height:20px;color:{MUTED}">
+Button not working? Paste this link into your browser:<br>
+<a href="{e(link)}" style="color:{MAGENTA};word-break:break-all">{e(link)}</a></p>
+"""
+        if button and link
         else ""
     )
     foot = (
@@ -55,14 +67,7 @@ def render(
 <h1 style="margin:0 0 16px;font-size:22px;line-height:30px;color:{INK}">{e(heading)}</h1>
 <p style="margin:0 0 16px;font-size:15px;line-height:24px;color:{INK}">{e(greeting)}</p>
 {paras}{box}
-<table role="presentation" cellpadding="0" cellspacing="0"><tr>
-<td style="border-radius:8px;background:{MAGENTA}">
-<a href="{e(link)}" style="display:inline-block;padding:12px 24px;font-size:15px;font-weight:600;
-color:#ffffff;text-decoration:none;border-radius:8px">{e(button)}</a></td></tr></table>
-<p style="margin:24px 0 0;font-size:13px;line-height:20px;color:{MUTED}">
-Button not working? Paste this link into your browser:<br>
-<a href="{e(link)}" style="color:{MAGENTA};word-break:break-all">{e(link)}</a></p>
-{foot}
+{cta}{foot}
 </td></tr></table>
 <p style="margin:16px 0 0;font-size:12px;color:{MUTED}">
 This is an automated message from Ampera Campus Hire. Please don't reply.</p>

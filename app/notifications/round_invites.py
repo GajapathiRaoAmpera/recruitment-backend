@@ -35,10 +35,14 @@ def compose(row, shortlisted: bool, link: str, ready: bool = False) -> Mail:
         subject = f"Your {rnd} is ready: {role} at {company}"
         heading = f"Your {rnd} is ready"
         lead = f"Your question paper for the {role} role at {company} is ready."
-    elif shortlisted:
-        subject = f"You're shortlisted: {role} at {company}"
-        heading = "You've been shortlisted"
-        lead = f"Good news! Your resume has been shortlisted for the {role} role at {company}."
+    elif shortlisted:  # no paper yet (PAPER_NOT_READY): the "is ready" email brings the link
+        name = row["full_name"]
+        heading = "You've been selected for the drive"
+        lead = f"Congratulations! You've been selected for the {role} drive at {company}."
+        details = [("Company", company), ("Role", role)]
+        html = render(heading, f"Hi {name},", [lead], details=details)
+        subject = f"You're selected for the drive: {role} at {company}"
+        return row["email"], subject, f"Hi {name},\n\n{lead}\n", html
     else:
         subject = f"You're through to the {rnd}: {role} at {company}"
         heading = "You're through to the next round"
