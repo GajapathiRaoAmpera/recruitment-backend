@@ -12,7 +12,7 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from app.attempts import repo
+from app.attempts import repo, state_repo
 from app.auth import entry
 from app.auth import repo as auth_repo
 from app.core.config import get_settings
@@ -171,20 +171,43 @@ def test_location_and_terms_must_be_logged_ok():
 
 
 @pytest.mark.parametrize(
-    "status,past,code",
+    "status,past,code,message",
     [
-        ("submitted", False, "ATTEMPT_LOCKED"),
-        ("locked", False, "ATTEMPT_LOCKED"),
-        ("expired", False, "ATTEMPT_EXPIRED"),
-        ("in_progress", True, "ATTEMPT_EXPIRED"),  # deadline passed, never marked expired
+        ("submitted", False, "ATTEMPT_SUBMITTED", "This test was already submitted"),
+        ("locked", False, "ATTEMPT_LOCKED", "paused. HR needs to resume it"),
+        ("expired", False, "ATTEMPT_EXPIRED", "Time is up"),
     ],
 )
-def test_a_finished_attempt_is_never_restarted_and_gets_no_token(status, past, code):
+def test_a_finished_attempt_is_never_restarted_and_gets_no_token(status, past, code, message):
     CALLS["existing"] = {"id": AID, "status": status, "past_deadline": past}
     r = start()
     assert r.status_code == 409 and r.json()["error"]["code"] == code
+    assert message in r.json()["error"]["message"]
     assert "attempt_token" not in r.text
-    assert "started" not in CALLS and "commit" not in CALLS
+    assert "started" not in CALLS and "commit" not in CALLS and "submitted" not in CALLS
+
+
+def test_in_progress_past_its_deadline_is_finalized_at_first_contact(monkeypatch):
+    """Deadline passed, never marked: finalize with the same submit GET /attempt uses, commit,
+    then answer ATTEMPT_EXPIRED (no token)."""
+
+    async def submit(_, aid):
+        CALLS["submitted"] = aid
+        return {"time_taken_sec": 1800}
+
+    monkeypatch.setattr(state_repo, "submit", submit)
+    CALLS["existing"] = {"id": AID, "status": "in_progress", "past_deadline": True}
+    r = start()
+    assert r.status_code == 409 and r.json()["error"]["code"] == "ATTEMPT_EXPIRED"
+    assert "attempt_token" not in r.text and "started" not in CALLS
+    assert CALLS["submitted"] == AID and CALLS["commit"] == 1
+
+
+def test_a_resumed_attempt_starts_again_and_returns_the_same_attempt():
+    # after HR's resume: in_progress with a deadline in the future
+    CALLS["existing"] = {"id": AID, "status": "in_progress", "past_deadline": False}
+    r = start()
+    assert r.status_code == 200 and r.json()["attempt_id"] == str(AID)
 
 
 def test_no_token_or_dob_is_ever_logged(caplog):

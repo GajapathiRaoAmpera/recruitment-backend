@@ -10,7 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import repo
-from app.auth.schemas import ConfirmIn, VerifyIn, VerifyOut
+from app.auth.schemas import ConfirmIn, EntryRound, VerifyIn, VerifyOut
 from app.auth.security import bearer
 from app.core.config import get_settings
 from app.core.db import get_session
@@ -43,46 +43,62 @@ def _decode(token: str) -> dict:
         raise AppError(401, "INVALID_TOKEN", "Sign in again") from e
 
 
+def _round_item(r) -> EntryRound:
+    return EntryRound(
+        round_id=str(r["round_id"]),
+        type=r["round_type"],
+        test_id=str(r["test_id"]) if r["test_id"] else None,
+        duration_min=r["duration_min"],
+        attempt_status=r["attempt_status"],
+    )
+
+
+async def rounds_for(session: AsyncSession, candidate_id: UUID) -> list[EntryRound]:
+    """The one place the student's round list is built: POST /entry/verify and GET /entry/rounds
+    both return this, so the two can never differ."""
+    return [_round_item(r) for r in await repo.candidate_rounds(session, candidate_id)]
+
+
 async def verify(session: AsyncSession, body: VerifyIn, meta: dict) -> VerifyOut:
-    rows = await repo.find_by_student_id(session, body.student_id)
-    first: dict = {}  # candidate_id -> first row, for logging
-    for r in rows:
-        first.setdefault(r["candidate_id"], r)
-    for cid in first:
-        if await repo.recent_failures(session, cid) >= MAX_FAILURES:
+    # found by ID + DOB whatever their rounds: a student who finished must not be told
+    # "ID or DOB does not match"
+    cands = await repo.find_candidates(session, body.student_id)
+    for c in cands:
+        if await repo.recent_failures(session, c["candidate_id"]) >= MAX_FAILURES:
             raise AppError(429, "TOO_MANY_ATTEMPTS", "Too many attempts. Try again in 15 minutes")
-    for r in rows:
-        ok = r["dob"] == body.dob
-        # a right DOB is logged for every round (HR stats are per round); a wrong one once per
-        # candidate so a miss counts once toward the lockout, not once per round
-        if ok or first[r["candidate_id"]] is r:
-            await repo.log_step(session, r["candidate_id"], r["round_id"], "id_dob", ok, meta)
+    matches = []  # (candidate, rounds) whose DOB is right, newest candidate first
+    for c in cands:
+        if c["dob"] == body.dob:
+            rows = await repo.candidate_rounds(session, c["candidate_id"])
+            # a right DOB is logged per round that can still be sat (HR stats are per round)
+            for r in rows:
+                if r["attempt_status"] != "submitted":
+                    await repo.log_step(
+                        session, c["candidate_id"], r["round_id"], "id_dob", True, meta
+                    )
+            matches.append((c, rows))
+        else:
+            # a wrong one once per candidate, so a miss counts once toward the lockout; logged
+            # against their latest round when none is open (the log needs a round, FK)
+            rid = await repo.failure_round(session, c["candidate_id"])
+            if rid is not None:
+                await repo.log_step(session, c["candidate_id"], rid, "id_dob", False, meta)
     await session.commit()  # keep the logs even when we raise below
-    # shortcut: same ID+DOB in two drives picks the newest candidate, upgrade if that happens
-    mine = [r for r in rows if r["dob"] == body.dob]
-    if (
-        not mine
-    ):  # same answer for "no such student" and "wrong DOB"; unknown IDs can't be logged (FK)
+    if not matches:
+        # same answer for "no such student" and "wrong DOB"; unknown IDs can't be logged (FK)
         raise AppError(401, "ENTRY_MISMATCH", "Student ID or date of birth does not match")
-    cid = mine[0]["candidate_id"]
+    # shortcut: same ID+DOB in two drives picks the newest candidate that has a round listed
+    # (else the newest), upgrade if that happens
+    cand, rows = next((m for m in matches if m[1]), matches[0])
     token = jwt.encode(
-        {"typ": "entry", "cid": str(cid), "exp": time.time() + ENTRY_TTL},
+        {"typ": "entry", "cid": str(cand["candidate_id"]), "exp": time.time() + ENTRY_TTL},
         get_settings().entry_signing_key,
         algorithm="HS256",
     )
     return VerifyOut(
         entry_token=token,
-        candidate={"full_name": mine[0]["full_name"]},
-        rounds=[
-            {
-                "round_id": str(r["round_id"]),
-                "type": r["round_type"],
-                "test_id": str(r["test_id"]) if r["test_id"] else None,
-                "duration_min": r["duration_min"],
-            }
-            for r in mine
-            if r["candidate_id"] == cid
-        ],
+        candidate={"full_name": cand["full_name"]},
+        rounds=[_round_item(r) for r in rows],
     )
 
 
