@@ -1,0 +1,41 @@
+name: CD
+# After CI passes on main: build the image, push it to GHCR, then deploy it on the GCP VM over SSH.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: # manual redeploy from the Actions tab
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+      - name: Build and push image
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:$SHA"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+      - name: Deploy on VM
+        env:
+          SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VM_KNOWN_HOSTS }}
+          TARGET: ${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}
+        run: |
+          install -m 600 /dev/null key && echo "$SSH_KEY" > key
+          echo "$KNOWN_HOSTS" > known_hosts
+          ssh -i key -o UserKnownHostsFile=known_hosts "$TARGET" "IMAGE=$IMAGE bash -s" < deploy/deploy.sh

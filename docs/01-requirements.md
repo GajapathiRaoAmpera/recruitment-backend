@@ -78,7 +78,7 @@ IDs are referenced from the plan, API contracts and tests.
 | AC-4 Round 1 | Attempt auto-submits at server deadline; ranking matches marks desc / time asc; changing an answer key re-scores; cut-off emails only those ≥ threshold. |
 | AC-5 Coding | Run returns only 3 sample results; Submit returns `passed/18`; each of the 6 languages passes a reference solution. |
 | AC-6 Draft recovery | Refresh or 60 s offline mid-test → code, answers and remaining time restored; no time gained. |
-| AC-7 Integrity | 3rd tab switch closes attempt and creates an alert; HR "resume" reopens it with remaining time and switch count reset. |
+| AC-7 Integrity | 3rd tab switch closes attempt and creates an alert; HR "resume" reopens it with remaining time and switch count reset (to 0, so 3 more switches before the next lock). History is kept: every violation row stays and HR's progress view shows the total ever reported plus how many times the attempt was resumed. |
 | AC-8 AI interview | Interview completes, transcript stored, score JSON valid against schema, HR can add notes. |
 | AC-9 HR flow | Skip a round → candidates move to the next; add technical round → appears in pipeline; per-test dashboard loads. |
 | AC-10 Audit | Every HR mutation and verification step has an `audit_logs` / `verification_logs` row. |

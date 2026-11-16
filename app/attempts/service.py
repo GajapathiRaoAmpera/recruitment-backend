@@ -2,7 +2,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.attempts import repo
+from app.attempts import repo, state_repo
 from app.attempts.schemas import StartOut
 from app.auth import entry
 from app.auth import repo as auth_repo
@@ -59,11 +59,19 @@ async def start(session: AsyncSession, who: entry.Entry, round_id: UUID) -> Star
     existing = await repo.find_attempt(session, round_id, who.candidate_id)
     if existing is not None:
         # never reopen a finished attempt; HR's resume is what reopens a locked one
-        if existing["status"] in ("submitted", "locked"):
-            raise AppError(409, "ATTEMPT_LOCKED", "This attempt is already closed")
-        if existing["status"] == "expired" or (
-            existing["status"] == "in_progress" and existing["past_deadline"]
-        ):
+        if existing["status"] == "submitted":
+            raise AppError(409, "ATTEMPT_SUBMITTED", "This test was already submitted")
+        if existing["status"] == "locked":
+            raise AppError(
+                409, "ATTEMPT_LOCKED", "This test is paused. HR needs to resume it before you go on"
+            )
+        if existing["status"] == "in_progress" and existing["past_deadline"]:
+            # the deadline decided it: finalize now (same submit GET /attempt uses), so the
+            # result is final at the first contact instead of waiting for HR's ranking
+            await state_repo.submit(session, existing["id"])
+            await session.commit()
+            raise AppError(409, "ATTEMPT_EXPIRED", "Time is up for this test")
+        if existing["status"] == "expired":
             raise AppError(409, "ATTEMPT_EXPIRED", "Time is up for this test")
     missing = await repo.missing_steps(session, who.candidate_id, round_id)
     if missing:
