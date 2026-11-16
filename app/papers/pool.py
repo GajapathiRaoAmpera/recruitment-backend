@@ -15,11 +15,6 @@ from app.papers.builder import needed
 from app.papers.generators import generate_questions
 from app.papers.schemas import LEVELS, Level, PaperSettings, PoolQuestion, Section
 
-# coarse progress steps on one fixed total, so the bar never moves backwards
-TOTAL = 100
-AFTER_GENERATORS = 10
-AFTER_TECHNICAL = 80
-
 
 async def build_pool(
     settings: PaperSettings,
@@ -37,19 +32,21 @@ async def build_pool(
 
     want = needed(settings)
     factor = settings.pool_factor
-    await on_progress(0, TOTAL)
+    # progress counts real questions: generated Aptitude/Reasoning + Technical asked of the AI
+    # (its top-up reserve included); done == total while the composer runs. Fixed from the start.
+    coded = sum(want[lv][s] * (factor + 1) for lv in LEVELS for s in ("aptitude", "reasoning"))
+    total = coded + agents.progress_total(settings, ("technical",))
+    await on_progress(0, total)
 
     pool: list[PoolQuestion] = []
     for lv in LEVELS:
         for section in ("aptitude", "reasoning"):
             n = want[lv][section] * (factor + 1)
             pool += generate_questions(section, lv, n, seed=f"{did}|{section}|{lv}")
-    await on_progress(AFTER_GENERATORS, TOTAL)
+    await on_progress(coded, total)
 
-    span = AFTER_TECHNICAL - AFTER_GENERATORS
-
-    async def tech_progress(done: int, total: int) -> None:
-        await on_progress(AFTER_GENERATORS + (done * span // total if total else 0), TOTAL)
+    async def tech_progress(done: int, _tech_total: int) -> None:
+        await on_progress(coded + done, total)
 
     pool += await agents.generate_pool(
         generator,
@@ -58,7 +55,7 @@ async def build_pool(
         overrides=overrides,
         sections=("technical",),
     )
-    await on_progress(AFTER_TECHNICAL, TOTAL)
+    await on_progress(total, total)  # now composing the selection
 
     have: dict[tuple[Level, Section], int] = {}
     for q in pool:
@@ -66,5 +63,5 @@ async def build_pool(
     target = {cell: min(want[cell[0]][cell[1]] * factor, n) for cell, n in have.items()}
     keep = await agents.compose_selection(composer, pool, target, overrides=overrides)
     pool = [q.model_copy(update={"selected": q.id in keep}) for q in pool]
-    await on_progress(TOTAL, TOTAL)
+    await on_progress(total, total)
     return pool

@@ -27,8 +27,10 @@ async def ensure_questions(
 ) -> bool:
     """Give this attempt its own paper (questions + option order) from the paper HR sent to
     the student. Repeating is harmless. False = no paper was sent to them."""
-    if round_type == "coding" or await repo.has_questions(session, attempt_id):
-        return True  # coding problems come from elsewhere
+    if round_type == "coding":  # coding problems come from the round's test, set up by HR
+        return await repo.coding_question_count(session, round_id) > 0
+    if await repo.has_questions(session, attempt_id):
+        return True
     paper = await repo.sent_paper(session, round_id, candidate_id)
     if paper is None:
         return False
@@ -73,7 +75,7 @@ async def start(session: AsyncSession, who: entry.Entry, round_id: UUID) -> Star
     if not await ensure_questions(session, attempt_id, who.candidate_id, round_id, rnd["type"]):
         # nothing is committed yet, so the attempt created above is rolled back
         raise AppError(
-            409, "PAPER_NOT_READY", "Your question paper isn't ready yet. Ask HR to send it."
+            409, "PAPER_NOT_READY", "Your test isn't ready yet. Please check back later, or ask HR."
         )
     await session.commit()
     return StartOut(

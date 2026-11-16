@@ -1,11 +1,12 @@
-# 03 — Database Schema (Supabase Postgres)
+# 03 — Database Schema (Azure Database for PostgreSQL)
 
 This is the design. The first Alembic migration implements it verbatim; after that, **changes go in new migrations and this doc is updated in the same PR**.
 
-Added beyond the PDF table list: `round_candidates` (who is in which round, with what result) and `audit_logs` (NFR auditability). `users.id` = Supabase `auth.users.id`.
+Hosting: Azure Database for PostgreSQL Flexible Server (PG 18). Tables live in the schema named by `DB_SCHEMA` (`campushire` on Azure; the app sets it as `search_path`, so SQL stays unqualified). No extensions are needed: `gen_random_uuid()` is built into Postgres 13+. 0001/0004 were edited (2026-11-14) to drop `pgcrypto`, `vector` and the unused `question_embeddings` table, so older databases built from the original files still have them; nothing reads them.
+
+Added beyond the PDF table list: `round_candidates` (who is in which round, with what result) and `audit_logs` (NFR auditability). Staff passwords live in `users` (0009); there is no external auth provider.
 
 ```sql
-create extension if not exists pgcrypto;
 
 create type user_role       as enum ('hr', 'super_admin');
 create type drive_status    as enum ('draft', 'active', 'closed');
@@ -18,12 +19,17 @@ create type question_kind   as enum ('mcq', 'coding');
 create type attempt_status  as enum ('not_started', 'in_progress', 'locked', 'submitted', 'expired');
 
 create table users (
-  id          uuid primary key,                       -- = auth.users.id
+  id          uuid primary key default gen_random_uuid(),
   email       text not null unique,
   full_name   text not null,
   role        user_role not null,
   is_active   boolean not null default true,
-  created_at  timestamptz not null default now()
+  created_at  timestamptz not null default now(),
+  -- 0009: own auth (Supabase Auth removed)
+  password_hash    text,                  -- scrypt (app/auth/passwords.py); null until invite link used
+  password_set_at  timestamptz,           -- bumped on every set: older set-password links stop working
+  failed_logins    int not null default 0,
+  locked_until     timestamptz            -- 5 wrong passwords in a row -> now() + 15 min
 );
 
 create table drives (
@@ -53,7 +59,7 @@ create table candidates (
 create table resumes (
   id             uuid primary key default gen_random_uuid(),
   candidate_id   uuid not null unique references candidates(id) on delete cascade,
-  storage_path   text not null,                        -- Supabase Storage key
+  storage_path   text not null,                        -- file key under RESUME_DIR (server disk)
   extracted_text text,
   skills         text[] not null default '{}',
   cgpa           numeric(4,2),
@@ -108,7 +114,11 @@ create table questions (
   approved      boolean not null default false,
   created_by    uuid references users(id),
   created_at    timestamptz not null default now(),
-  explanation   text                                   -- 0002: worked solution / "why"; HR only
+  explanation   text,                                  -- 0002: worked solution / "why"; HR only
+  mode          text not null default 'stdin',         -- 0010: stdin | function (check); 0011: + sql
+  signature     jsonb,                                 -- 0010: function mode only (check: set exactly when mode = 'function')
+  sql_schema    text,                                  -- 0011: sql mode only: the CREATE TABLE statements (shown to students)
+  sql_order_matters boolean                            -- 0011: sql mode only: compare row order? (check: both set exactly when mode = 'sql')
 );
 
 create table test_questions (
@@ -291,20 +301,14 @@ alter table questions add column topic text;
 alter table questions add column source_number int;     -- number within its subject in the PDF
 alter table questions add column warnings text[] not null default '{}';  -- parse warnings
 
-create table question_embeddings (
-  question_id  uuid primary key references questions(id) on delete cascade,
-  embedding    vector(384) not null,                    -- = settings.embedding_dim (all-MiniLM-L6-v2)
-  model        text not null
-);
-
 create index questions_source_id_idx on questions (source_id);
 create index questions_subject_idx on questions (subject);
 alter table question_sources enable row level security;
-alter table question_embeddings enable row level security;
 
--- D8: RLS on, no policies → anon/authenticated keys read nothing. API uses the service connection.
+-- D8: RLS on, no policies → no other role reads anything. API connects as the owning role.
+-- (0008: the loop uses current_schema(), so it covers DB_SCHEMA, not only public)
 do $$ declare t text; begin
-  for t in select tablename from pg_tables where schemaname = 'public' loop
+  for t in select tablename from pg_tables where schemaname = current_schema() loop
     execute format('alter table %I enable row level security', t);
   end loop;
 end $$;
@@ -322,6 +326,8 @@ end $$;
 - `paper_issues` rows are never rewritten: sending again to the same candidate is a no-op.
 - Bank questions (`questions.source_id is not null`) are inserted `approved = false`; only approved questions of `is_active` + `status = 'ready'` sources are retrieved for papers. Deleting a source hard-deletes its questions and embeddings (FK cascade); paper pools hold their own copies with new ids, so sent papers are unaffected.
 - A draft in `generating` for more than 15 minutes is reported as `failed` ("Generation timed out") on read.
+- Function-mode questions (`questions.mode = 'function'`): `test_cases.input` / `expected` are stored in the canonical per-type format (docs/04 "Function-mode coding questions"); the driver that joins student code for Judge0 lives only in `app/execution/function_mode/` and is never stored or sent to a student; `answers.code` / `draft_code` hold the student's function only.
+- SQL questions (`questions.mode = 'sql'`): each `test_cases.input` is one dataset (single-row `INSERT INTO t (every column) VALUES (...);` lines, derived by code from the AI's base rows), `expected` is the reference query's rows on that dataset (may be `''` for an empty result). `reference_solution` holds the reference query (`reference_language = 'sql'`), HR/Super Admin only. Student queries (`GET /attempt`) select `sql_schema`, `sql_order_matters` and sample cases only; the setup script built from them (`app/execution/sql_mode/runner.py`) goes to Judge0 only and is never stored. `sql_schema` and the cases are never changed by PATCH.
 - Coding answers: submit-code sets `code`, `language`, `passed_cases`, `total_cases`, `updated_at` and `marks = round(questions.marks * passed / total, 2)` together, only while the attempt is `in_progress` or `locked` (row-locked), so the final submit's `attempts.marks = sum(answers.marks)` includes coding. A code draft only sets `draft_*`; the draft is newer than the submission when `draft_saved_at >= updated_at`.
 
 ## 0003_round_duration
@@ -332,3 +338,9 @@ end $$;
 
 ## 0007_question_reference_solution
 `questions.reference_solution text`, `questions.reference_language text` (both nullable, check `questions_reference_pair`: set together or both null). Written by `POST /questions/generate`: the program whose Judge0 stdout became each test case's `expected` (`reference_language` is `'python'`). Such questions are inserted `approved = false`, `ai_generated = true`. Manual coding questions leave both null. HR/Super Admin only.
+
+## 0010_question_function_mode
+`questions.mode text not null default 'stdin'` (check `questions_mode_check`: `'stdin'` or `'function'`) and `questions.signature jsonb` (nullable; check `questions_signature_mode`: `(mode = 'function') = (signature is not null)`). Every existing question becomes `stdin` and keeps working unchanged. `signature` = `{"function_name": "twoSum", "parameters": [{"name": "nums", "type": "int[]"}, {"name": "target", "type": "int"}], "return_type": "int[]"}`, validated by the API (types limited to `int, long, double, bool, string, int[], string[], int[][]`; names checked against every language's keywords). Written by `POST/PATCH /questions` and `POST /questions/generate` (`mode:"function"`). Not secret: students see `mode` and `signature` in `GET /attempt`. Downgrade drops both columns and both checks.
+
+## 0011_question_sql_mode
+`questions_mode_check` becomes `mode in ('stdin', 'function', 'sql')`; new `questions.sql_schema text` and `questions.sql_order_matters boolean` (both nullable; check `questions_sql_mode`: `(mode = 'sql') = (sql_schema is not null and sql_order_matters is not null)`). Existing questions are unchanged. Written only by `POST /questions/generate` with `mode:"sql"` (`sql_schema` is stored normalised: one `CREATE TABLE ...;` per paragraph). Not secret: students see `schema` and `order_matters` in `GET /attempt`. Downgrade drops both columns and the check and restores the two-mode check; it fails while any `mode = 'sql'` question exists (delete those first).

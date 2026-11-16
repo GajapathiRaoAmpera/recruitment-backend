@@ -10,9 +10,16 @@ class Settings(BaseSettings):
 
     app_env: str = "dev"  # dev | test | prod
     database_url: str  # postgresql+asyncpg://user:pass@host:5432/db
-    supabase_url: str  # https://<project-ref>.supabase.co (not secret)
-    supabase_secret_key: str  # sb_secret_... — server only, never sent to the browser
-    student_token_secret: str = ""  # optional override; default is derived from supabase_secret_key
+    db_schema: str = "public"  # Postgres schema holding our tables (Azure: campushire)
+    jwt_secret: (
+        str  # signs staff + set-password tokens (HS256). Server only: `openssl rand -hex 32`
+    )
+    student_token_secret: str = ""  # optional override; default is derived from jwt_secret
+    # Staff invite / password-reset emails. Gmail: smtp.gmail.com:587 + a Google App Password.
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: str = ""  # also the From address; empty => email not configured
+    smtp_password: str = ""
     resume_dir: str = (
         "storage/resumes"  # resume PDFs are saved here (relative to where you start the app)
     )
@@ -42,7 +49,7 @@ class Settings(BaseSettings):
     @field_validator("database_url")
     @classmethod
     def _use_asyncpg(cls, v: str) -> str:
-        # Supabase hands out postgresql:// URIs; the app's driver is asyncpg
+        # Hosts hand out postgresql:// URIs; the app's driver is asyncpg
         return v.replace("postgresql://", "postgresql+asyncpg://", 1).replace(
             "postgres://", "postgresql+asyncpg://", 1
         )
@@ -52,9 +59,7 @@ class Settings(BaseSettings):
         # derived (HMAC, domain-separated) so students need no extra setting
         if self.student_token_secret:
             return self.student_token_secret
-        return hmac.new(
-            self.supabase_secret_key.encode(), b"student-entry-token", "sha256"
-        ).hexdigest()
+        return hmac.new(self.jwt_secret.encode(), b"student-entry-token", "sha256").hexdigest()
 
     @field_validator("nvidia_api_key", "gemini_api_key")
     @classmethod

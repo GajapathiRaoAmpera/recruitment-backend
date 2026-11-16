@@ -179,15 +179,17 @@ async def sync_round_one(
     round_id: UUID,
     candidate_ids: list[UUID],
     shortlisted: bool,
-) -> int:
+) -> list[UUID]:
     """Shortlisted candidates (that have a resume row) are invited to Round 1; un-shortlisted ones
-    are taken out again, but only while still `invited` (never after they started)."""
+    are taken out again, but only while still `invited` (never after they started).
+    Returns the candidates actually added/removed (so re-shortlisting doesn't re-email)."""
     if shortlisted:
         result = await session.execute(
             text(
                 "insert into round_candidates (round_id, candidate_id) "
                 "select :r, c.id from candidates c join resumes s on s.candidate_id = c.id "
-                "where c.drive_id = :d and c.id = any(:ids) on conflict do nothing"
+                "where c.drive_id = :d and c.id = any(:ids) on conflict do nothing "
+                "returning candidate_id"
             ),
             {"r": round_id, "d": drive_id, "ids": candidate_ids},
         )
@@ -196,8 +198,8 @@ async def sync_round_one(
             text(
                 "delete from round_candidates where round_id = :r and candidate_id = any(:ids) "
                 "and status = 'invited' and candidate_id in "
-                "(select id from candidates where drive_id = :d)"
+                "(select id from candidates where drive_id = :d) returning candidate_id"
             ),
             {"r": round_id, "d": drive_id, "ids": candidate_ids},
         )
-    return result.rowcount
+    return list(result.scalars())

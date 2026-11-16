@@ -1,0 +1,171 @@
+
+// ---- driver (added by the judge): read the case, call the function, print the result ----
+public class Main {
+    static void drvFail(String msg) {
+        System.err.println(msg);
+        System.err.flush();
+        System.exit(1);
+    }
+
+    static final class DrvIn {
+        final String s;
+        int i = 0;
+
+        DrvIn(String s) { this.s = s; }
+
+        void ws() {
+            while (i < s.length() && " \t\r\n".indexOf(s.charAt(i)) >= 0) i++;
+        }
+
+        char peek() {
+            ws();
+            return i < s.length() ? s.charAt(i) : '\0';
+        }
+
+        void expect(char c) {
+            if (peek() != c) drvFail("driver: bad input");
+            i++;
+        }
+
+        String token() {
+            ws();
+            int st = i;
+            while (i < s.length() && "+-0123456789.eE".indexOf(s.charAt(i)) >= 0) i++;
+            if (st == i) drvFail("driver: bad input");
+            return s.substring(st, i);
+        }
+
+        long readLong() { return Long.parseLong(token()); }
+        int readInt() { return Integer.parseInt(token()); }
+        double readDouble() { return Double.parseDouble(token()); }
+
+        boolean readBool() {
+            ws();
+            if (s.startsWith("true", i)) { i += 4; return true; }
+            if (s.startsWith("false", i)) { i += 5; return false; }
+            drvFail("driver: bad input");
+            return false;
+        }
+
+        String readString() {
+            expect('"');
+            StringBuilder b = new StringBuilder();
+            while (true) {
+                if (i >= s.length()) drvFail("driver: bad input");
+                char c = s.charAt(i++);
+                if (c == '"') return b.toString();
+                if (c != '\\') { b.append(c); continue; }
+                char e = s.charAt(i++);
+                switch (e) {
+                    case 'n': b.append('\n'); break;
+                    case 't': b.append('\t'); break;
+                    case 'r': b.append('\r'); break;
+                    case 'b': b.append('\b'); break;
+                    case 'f': b.append('\f'); break;
+                    case '/': b.append('/'); break;
+                    case '\\': b.append('\\'); break;
+                    case '"': b.append('"'); break;
+                    case 'u': b.append((char) Integer.parseInt(s.substring(i, i + 4), 16)); i += 4; break;
+                    default: drvFail("driver: bad input");
+                }
+            }
+        }
+
+        // reads "[a,b,...]"; item() reads one element
+        <T> java.util.ArrayList<T> readList(java.util.function.Supplier<T> item) {
+            java.util.ArrayList<T> out = new java.util.ArrayList<>();
+            expect('[');
+            if (peek() == ']') { i++; return out; }
+            while (true) {
+                out.add(item.get());
+                char c = peek();
+                i++;
+                if (c == ',') continue;
+                if (c == ']') return out;
+                drvFail("driver: bad input");
+            }
+        }
+
+        int[] readIntArray() {
+            java.util.ArrayList<Integer> l = readList(this::readInt);
+            int[] a = new int[l.size()];
+            for (int k = 0; k < a.length; k++) a[k] = l.get(k);
+            return a;
+        }
+
+        String[] readStringArray() { return readList(this::readString).toArray(new String[0]); }
+
+        int[][] readIntMatrix() { return readList(this::readIntArray).toArray(new int[0][]); }
+    }
+
+    static String drvLine(String[] lines, int i) {
+        if (i >= lines.length) drvFail("driver: the test case has too few input lines");
+        return lines[i];
+    }
+
+    static void drvNotNull(Object v) {
+        if (v == null) drvFail("@@FUNCTION@@ returned null, but it must return @@RETURN_NAME@@");
+    }
+
+    static String fmtInt(int v) { return Integer.toString(v); }
+    static String fmtLong(long v) { return Long.toString(v); }
+    static String fmtBool(boolean v) { return v ? "true" : "false"; }
+
+    static String fmtDouble(double v) {
+        if (Double.isNaN(v) || Double.isInfinite(v)) return Double.toString(v);
+        String s = new java.math.BigDecimal(v).setScale(5, java.math.RoundingMode.HALF_EVEN).toPlainString();
+        return s.equals("-0.00000") ? "0.00000" : s;
+    }
+
+    static String fmtString(String v) {
+        drvNotNull(v);
+        StringBuilder b = new StringBuilder("\"");
+        for (int k = 0; k < v.length(); k++) {
+            char c = v.charAt(k);
+            switch (c) {
+                case '"': b.append("\\\""); break;
+                case '\\': b.append("\\\\"); break;
+                case '\n': b.append("\\n"); break;
+                case '\r': b.append("\\r"); break;
+                case '\t': b.append("\\t"); break;
+                case '\b': b.append("\\b"); break;
+                case '\f': b.append("\\f"); break;
+                default:
+                    if (c < 0x20) b.append(String.format("\\u%04x", (int) c));
+                    else b.append(c);
+            }
+        }
+        return b.append('"').toString();
+    }
+
+    static String fmtIntArray(int[] v) {
+        drvNotNull(v);
+        StringBuilder b = new StringBuilder("[");
+        for (int k = 0; k < v.length; k++) { if (k > 0) b.append(','); b.append(v[k]); }
+        return b.append(']').toString();
+    }
+
+    static String fmtStringArray(String[] v) {
+        drvNotNull(v);
+        StringBuilder b = new StringBuilder("[");
+        for (int k = 0; k < v.length; k++) { if (k > 0) b.append(','); b.append(fmtString(v[k])); }
+        return b.append(']').toString();
+    }
+
+    static String fmtIntMatrix(int[][] v) {
+        drvNotNull(v);
+        StringBuilder b = new StringBuilder("[");
+        for (int k = 0; k < v.length; k++) { if (k > 0) b.append(','); b.append(fmtIntArray(v[k])); }
+        return b.append(']').toString();
+    }
+
+    public static void main(String[] drvArgv) throws Exception {
+        byte[] drvBytes = System.in.readAllBytes();
+        String[] drvLines = new String(drvBytes, java.nio.charset.StandardCharsets.UTF_8).split("\n", -1);
+        java.io.PrintStream drvOut = new java.io.PrintStream(
+            new java.io.FileOutputStream(java.io.FileDescriptor.out), true, "UTF-8");
+        java.io.PrintStream drvStdout = System.out;
+@@CALL@@
+        drvOut.flush();
+    }
+}

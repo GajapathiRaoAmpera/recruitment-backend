@@ -1,0 +1,274 @@
+
+/* ---- driver (added by the judge): read the case, call the function, print the result ---- */
+#line 1 "driver.c"
+
+static char **drv_lines;
+static int drv_nlines;
+
+static void drv_fail(const char *msg) {
+    fflush(stdout);
+    fprintf(stderr, "%s\n", msg);
+    exit(1);
+}
+
+static void drv_read_all(void) {
+    size_t cap = 1 << 16, len = 0, n;
+    char *buf = malloc(cap);
+    while ((n = fread(buf + len, 1, cap - len - 1, stdin)) > 0) {
+        len += n;
+        if (cap - len - 1 == 0) {
+            cap *= 2;
+            buf = realloc(buf, cap);
+        }
+    }
+    buf[len] = 0;
+    int lcap = 16;
+    drv_lines = malloc(lcap * sizeof(char *));
+    drv_nlines = 0;
+    char *p = buf;
+    for (;;) {
+        if (drv_nlines == lcap) {
+            lcap *= 2;
+            drv_lines = realloc(drv_lines, lcap * sizeof(char *));
+        }
+        drv_lines[drv_nlines++] = p;
+        char *nl = strchr(p, '\n');
+        if (!nl) break;
+        *nl = 0;
+        p = nl + 1;
+    }
+}
+
+static const char *drv_line(int i) {
+    if (i >= drv_nlines) drv_fail("driver: the test case has too few input lines");
+    return drv_lines[i];
+}
+
+static void drv_ws(const char **p) {
+    while (**p == ' ' || **p == '\t' || **p == '\r' || **p == '\n') (*p)++;
+}
+
+static void drv_expect(const char **p, char c) {
+    drv_ws(p);
+    if (**p != c) drv_fail("driver: bad input");
+    (*p)++;
+}
+
+static long long drv_ll(const char **p) {
+    drv_ws(p);
+    char *end;
+    long long v = strtoll(*p, &end, 10);
+    if (end == *p) drv_fail("driver: bad input");
+    *p = end;
+    return v;
+}
+
+static double drv_double(const char **p) {
+    drv_ws(p);
+    char *end;
+    double v = strtod(*p, &end);
+    if (end == *p) drv_fail("driver: bad input");
+    *p = end;
+    return v;
+}
+
+static bool drv_bool(const char **p) {
+    drv_ws(p);
+    if (strncmp(*p, "true", 4) == 0) { *p += 4; return true; }
+    if (strncmp(*p, "false", 5) == 0) { *p += 5; return false; }
+    drv_fail("driver: bad input");
+    return false;
+}
+
+static unsigned drv_hex4(const char **p) {
+    unsigned v = 0;
+    for (int k = 0; k < 4; k++) {
+        char c = *(*p)++;
+        v <<= 4;
+        if (c >= '0' && c <= '9') v |= c - '0';
+        else if (c >= 'a' && c <= 'f') v |= c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') v |= c - 'A' + 10;
+        else drv_fail("driver: bad input");
+    }
+    return v;
+}
+
+static void drv_utf8(char **o, unsigned cp) {
+    if (cp < 0x80) { *(*o)++ = (char)cp; }
+    else if (cp < 0x800) { *(*o)++ = (char)(0xC0 | (cp >> 6)); *(*o)++ = (char)(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) {
+        *(*o)++ = (char)(0xE0 | (cp >> 12)); *(*o)++ = (char)(0x80 | ((cp >> 6) & 0x3F));
+        *(*o)++ = (char)(0x80 | (cp & 0x3F));
+    } else {
+        *(*o)++ = (char)(0xF0 | (cp >> 18)); *(*o)++ = (char)(0x80 | ((cp >> 12) & 0x3F));
+        *(*o)++ = (char)(0x80 | ((cp >> 6) & 0x3F)); *(*o)++ = (char)(0x80 | (cp & 0x3F));
+    }
+}
+
+static char *drv_str(const char **p) {
+    drv_expect(p, '"');
+    char *out = malloc(strlen(*p) + 1), *o = out; /* decoding never grows the text */
+    for (;;) {
+        char c = *(*p)++;
+        if (c == 0) drv_fail("driver: bad input");
+        if (c == '"') break;
+        if (c != '\\') { *o++ = c; continue; }
+        c = *(*p)++;
+        switch (c) {
+        case 'n': *o++ = '\n'; break;
+        case 't': *o++ = '\t'; break;
+        case 'r': *o++ = '\r'; break;
+        case 'b': *o++ = '\b'; break;
+        case 'f': *o++ = '\f'; break;
+        case '/': *o++ = '/'; break;
+        case '\\': *o++ = '\\'; break;
+        case '"': *o++ = '"'; break;
+        case 'u': {
+            unsigned cp = drv_hex4(p);
+            if (cp >= 0xD800 && cp < 0xDC00 && (*p)[0] == '\\' && (*p)[1] == 'u') {
+                *p += 2;
+                cp = 0x10000 + ((cp - 0xD800) << 10) + (drv_hex4(p) - 0xDC00);
+            }
+            drv_utf8(&o, cp);
+            break;
+        }
+        default: drv_fail("driver: bad input");
+        }
+    }
+    *o = 0;
+    return out;
+}
+
+/* [a,b,...]: calls item() for each element; returns the count */
+static int drv_list(const char **p, void (*item)(const char **, void *), void *ctx) {
+    drv_expect(p, '[');
+    drv_ws(p);
+    int n = 0;
+    if (**p == ']') { (*p)++; return 0; }
+    for (;;) {
+        item(p, ctx);
+        n++;
+        drv_ws(p);
+        if (**p == ',') { (*p)++; continue; }
+        if (**p == ']') { (*p)++; return n; }
+        drv_fail("driver: bad input");
+    }
+}
+
+typedef struct { void *data; int n, cap; size_t size; } drv_vec;
+
+static void *drv_push(drv_vec *v) {
+    if (v->n == v->cap) {
+        v->cap = v->cap ? v->cap * 2 : 8;
+        v->data = realloc(v->data, v->cap * v->size);
+    }
+    return (char *)v->data + (v->n++) * v->size;
+}
+
+static void drv_int_item(const char **p, void *ctx) { *(int *)drv_push(ctx) = (int)drv_ll(p); }
+static void drv_str_item(const char **p, void *ctx) { *(char **)drv_push(ctx) = drv_str(p); }
+
+static int *drv_int_array(const char **p, int *n) {
+    drv_vec v = {0, 0, 0, sizeof(int)};
+    *n = drv_list(p, drv_int_item, &v);
+    return v.data ? v.data : malloc(sizeof(int));
+}
+
+static char **drv_str_array(const char **p, int *n) {
+    drv_vec v = {0, 0, 0, sizeof(char *)};
+    *n = drv_list(p, drv_str_item, &v);
+    return v.data ? v.data : malloc(sizeof(char *));
+}
+
+typedef struct { drv_vec rows, cols; } drv_matrix;
+
+static void drv_row_item(const char **p, void *ctx) {
+    drv_matrix *m = ctx;
+    int n;
+    int *row = drv_int_array(p, &n);
+    *(int **)drv_push(&m->rows) = row;
+    *(int *)drv_push(&m->cols) = n;
+}
+
+static int **drv_int_matrix(const char **p, int *n, int **cols) {
+    drv_matrix m = {{0, 0, 0, sizeof(int *)}, {0, 0, 0, sizeof(int)}};
+    *n = drv_list(p, drv_row_item, &m);
+    *cols = m.cols.data ? m.cols.data : malloc(sizeof(int));
+    return m.rows.data ? m.rows.data : malloc(sizeof(int *));
+}
+
+static void drv_put_int(long long x) { printf("%lld", x); }
+static void drv_put_bool(bool x) { fputs(x ? "true" : "false", stdout); }
+
+static void drv_put_double(double x) {
+    char buf[512];
+    snprintf(buf, sizeof buf, "%.5f", x);
+    fputs(strcmp(buf, "-0.00000") == 0 ? "0.00000" : buf, stdout);
+}
+
+static void drv_put_str(const char *s) {
+    if (!s) drv_fail("@@FUNCTION@@ returned a NULL string");
+    putchar('"');
+    for (const unsigned char *c = (const unsigned char *)s; *c; c++) {
+        switch (*c) {
+        case '"': fputs("\\\"", stdout); break;
+        case '\\': fputs("\\\\", stdout); break;
+        case '\n': fputs("\\n", stdout); break;
+        case '\r': fputs("\\r", stdout); break;
+        case '\t': fputs("\\t", stdout); break;
+        case '\b': fputs("\\b", stdout); break;
+        case '\f': fputs("\\f", stdout); break;
+        default:
+            if (*c < 0x20) printf("\\u%04x", *c);
+            else putchar(*c);
+        }
+    }
+    putchar('"');
+}
+
+static void drv_check_size(const void *a, int n) {
+    if (n < 0) drv_fail("@@FUNCTION@@ set a negative *returnSize");
+    if (n > 0 && !a) drv_fail("@@FUNCTION@@ returned NULL with *returnSize > 0");
+}
+
+static void drv_put_int_array(const int *a, int n) {
+    drv_check_size(a, n);
+    putchar('[');
+    for (int i = 0; i < n; i++) { if (i) putchar(','); printf("%d", a[i]); }
+    putchar(']');
+}
+
+static void drv_put_str_array(char **a, int n) {
+    drv_check_size(a, n);
+    putchar('[');
+    for (int i = 0; i < n; i++) { if (i) putchar(','); drv_put_str(a[i]); }
+    putchar(']');
+}
+
+static void drv_put_int_matrix(int **a, int n, const int *cols) {
+    drv_check_size(a, n);
+    if (n > 0 && !cols) drv_fail("@@FUNCTION@@ did not set *returnColumnSizes");
+    putchar('[');
+    for (int i = 0; i < n; i++) { if (i) putchar(','); drv_put_int_array(a[i], cols[i]); }
+    putchar(']');
+}
+
+static FILE *drv_real_stdout;
+
+static void drv_begin_call(void) { /* the student's printf output goes to stderr */
+    drv_real_stdout = stdout;
+    stdout = stderr;
+}
+
+static void drv_end_call(void) {
+    fflush(stderr);
+    stdout = drv_real_stdout;
+}
+
+int main(void) {
+    drv_read_all();
+@@CALL@@
+    putchar('\n');
+    fflush(stdout);
+    return 0;
+}

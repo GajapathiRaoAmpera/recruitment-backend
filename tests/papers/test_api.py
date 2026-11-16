@@ -713,3 +713,32 @@ def test_detail_recomputes_checks_so_old_stored_rules_do_not_block(db):
     checks = as_user(HR).get(f"{BASE}/drafts/{did}").json()["checks"]
     assert [c["id"] for c in checks if not c["ok"]] == []
     assert "students_differ" not in {c["id"] for c in checks}
+
+
+def test_send_emails_only_newly_sent_students_that_their_test_is_ready(db, monkeypatch):
+    """The shortlist email can arrive before any paper exists; Send is what opens the test."""
+    drive, round_one = uuid.uuid4(), uuid.uuid4()
+    a, b = uuid.uuid4(), uuid.uuid4()
+    did = seed_draft(db, status="accepted")
+    db["drafts"][did]["drive_ref"] = str(drive)
+    asked, sent = [], []
+
+    async def first_test_round(_, drive_id):
+        assert drive_id == drive
+        return round_one
+
+    async def for_round(_, round_id, ids, shortlisted=False, ready=False):
+        asked.append((round_id, ids, ready))
+        return [("to", "s", "b", "h")]
+
+    async def send_all(mails):
+        sent.append(mails)
+
+    monkeypatch.setattr(service.rounds_mod, "first_test_round", first_test_round)
+    monkeypatch.setattr(service.round_invites, "for_round", for_round)
+    monkeypatch.setattr(service.round_invites, "send_all", send_all)
+    c = as_user(HR)
+    c.post(f"{BASE}/drafts/{did}/send", json={"candidate_refs": [str(a), "not-a-uuid"]})
+    c.post(f"{BASE}/drafts/{did}/send", json={"candidate_refs": [str(a), str(b)]})
+    assert asked == [(round_one, [a], True), (round_one, [b], True)]  # a isn't emailed twice
+    assert len(sent) == 2

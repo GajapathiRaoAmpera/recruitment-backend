@@ -27,7 +27,7 @@ test-judge0: ## AC-5: reference solutions in every language on a live Judge0 (ne
 
 check: lint test ## Everything CI checks, before you push
 
-migrate: ## Apply migrations to DATABASE_URL (shared Supabase: get a team OK first)
+migrate: ## Apply migrations to DATABASE_URL (shared Azure DB: get a team OK first)
 	uv run alembic upgrade head
 
 migration: ## New empty migration: make migration m="add_x_to_y"

@@ -14,6 +14,8 @@ from app.auth.schemas import StaffUser
 from app.core.audit import audit
 from app.core.db import get_engine
 from app.core.errors import AppError
+from app.drives import rounds as rounds_mod
+from app.notifications import round_invites
 from app.papers import agents, builder, repo
 from app.papers import pool as pipeline
 from app.papers.agents import OnProgress
@@ -405,7 +407,11 @@ async def accept_draft(session: AsyncSession, actor: StaffUser, draft_id: UUID) 
 
 
 async def send_papers(
-    session: AsyncSession, actor: StaffUser, draft_id: UUID, candidate_refs: list[str]
+    session: AsyncSession,
+    actor: StaffUser,
+    draft_id: UUID,
+    candidate_refs: list[str],
+    background: BackgroundTasks | None = None,
 ) -> SendResult:
     d = await _load(session, actor, draft_id, lock=True)
     refs = list(dict.fromkeys(r.strip() for r in candidate_refs if r and r.strip()))
@@ -418,6 +424,7 @@ async def send_papers(
     if d.get("persisted_at") is None:
         chosen = [q for q in d.get("pool") or [] if q.get("selected", True)]
         persisted = await repo.persist_questions(session, draft_id, chosen)
+    had = {i["candidate_ref"] for i in await repo.list_issues(session, draft_id)}  # row is locked
     rows = [{"candidate_ref": r, "seed": _seed(settings, d["drive_ref"], r)} for r in refs]
     sent = await repo.insert_issues(session, draft_id, rows)
     result = SendResult(sent=sent, already_sent=len(refs) - sent)
@@ -430,4 +437,19 @@ async def send_papers(
         {"candidate_refs": refs, **result.model_dump(), "questions_persisted": persisted},
     )
     await session.commit()
+    # Tell the newly sent students their test is open now: the shortlist email may have come
+    # before any paper existed, and starting then fails with PAPER_NOT_READY.
+    if background is not None:
+        new = [u for r in refs if r not in had and (u := _uuid(r))]
+        drive = _uuid(d["drive_ref"])
+        round_one = await rounds_mod.first_test_round(session, drive) if drive and new else None
+        mails = await round_invites.for_round(session, round_one, new, ready=True)
+        background.add_task(round_invites.send_all, mails)
     return result
+
+
+def _uuid(value: str) -> UUID | None:
+    try:
+        return UUID(value)
+    except ValueError:
+        return None

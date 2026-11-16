@@ -8,18 +8,18 @@ Next.js app (React, TypeScript, SCSS)     ── Student / HR / Super Admin port
 Python API (FastAPI)                      ── all business logic, RBAC, scoring, emails
         │
   ┌─────┼──────────┬──────────────┬─────────────┬───────────┐
-Supabase        Judge0        Gemini API      Resume parser   Email
+Azure Postgres  Judge0        Gemini API      Resume parser   Email
 Postgres/Auth/  code exec     (questions,     pdfplumber +    console | Resend/SMTP
 Storage                       Live interview) Tesseract fallback
 ```
-The browser never talks to Supabase DB or Judge0 directly. Exception: the Gemini Live audio stream, which uses a **short-lived ephemeral token** minted by the API (API key stays server-side).
+The browser never talks to the database or Judge0 directly. Exception: the Gemini Live audio stream, which uses a **short-lived ephemeral token** minted by the API (API key stays server-side).
 
 ## Backend layout (`recruitment-backend/`)
 ```
 app/
   main.py            FastAPI app, routers mounted under /api/v1
   core/              config (pydantic-settings), db session, security (JWT), errors
-  auth/              HR/Admin Supabase JWT verify; student entry token issue/verify   ← danger zone
+  auth/              staff login + own JWT, set-password links; student entry tokens   ← danger zone
   drives/            drives, rounds (pipeline), round_candidates
   candidates/        import (Excel/CSV), resumes, parser, shortlist filters
   tests/             tests, questions, AI generation, attempts, answers, scoring, ranking
@@ -39,7 +39,7 @@ src/
   app/          Next.js App Router: (auth)/{student,hr,admin}/login, (staff)/hr, (staff)/admin, (student)/student, exam/[roundId]
   components/   shared UI built from Stitch tokens (ui/, shell/, hire/, student/, brand/, auth/)
   features/     test-runner/ (danger zone: full screen, tab-switch reporting, local drafts)
-  lib/          supabase client, api fetch client, helpers
+  lib/          api fetch client, helpers
   mock/         in-memory prototype data; replaced screen by screen as endpoints land
   styles/       SCSS tokens + mixins copied from Stitch DESIGN.md
 stitch_.../     design mockups — reference only, not shipped
@@ -51,7 +51,7 @@ The browser calls `/api/v1/*` on its own origin; Next rewrites it to FastAPI (no
 |---|---|---|
 | D1 | FastAPI + Pydantic v2 + SQLAlchemy 2 (async, asyncpg) + Alembic, Python 3.12, `uv` | Typed contracts → OpenAPI for free; team knows Python |
 | D2 | Modular monolith, one API process; background work via FastAPI `BackgroundTasks` | Smallest thing that works for 300 users. Upgrade to a queue (arq/RQ) if email/OCR batches exceed ~30 s |
-| D3 | HR/Admin auth = Supabase Auth; API verifies Supabase JWT and loads role from `users` | No password handling in our code |
+| D3 | HR/Admin auth = our own: `POST /auth/login` checks a scrypt hash in `users` and issues an HS256 staff JWT (8 h, `JWT_SECRET`); invites/resets are one-time set-password links emailed over SMTP (Gmail). Role always loaded from `users` (2026-11-14: replaced Supabase Auth) | One less external service; the whole system runs on Azure. Cost: we own password safety (scrypt, lockout, generic errors, single-use links) |
 | D4 | Student auth = signed invite token in email link + ID/DOB → API issues attempt-scoped JWT (2 h) | Students have no accounts per spec |
 | D5 | Server owns the deadline: `deadline_at = started_at + duration`; client timer is display only | Refresh/offline cannot add time |
 | D6 | Tab switches reported to API; server counts and closes at 3 | Client cannot be trusted to self-close |
@@ -59,7 +59,7 @@ The browser calls `/api/v1/*` on its own origin; Next rewrites it to FastAPI (no
 | D8 | RLS enabled on every table with no anon/authenticated policies; API uses service connection | Defence in depth if the anon key leaks |
 | D9 | Judge0 self-hosted (Judge0 CE). SQL runs via its SQLite language | Free tier of hosted Judge0 too small for a batch |
 | D10 | All AI output (questions, scores) validated against a Pydantic schema before storage; questions need HR approval | Model output is untrusted |
-| D11 | Frontend: Next.js (App Router) + React 19 + TypeScript, SCSS modules with Stitch tokens, Monaco editor. HR/Admin sign in with supabase-js in the browser (publishable key only) | Built this way already; TypeScript compiles to JavaScript, so the spec's "React + JS" constraint holds — confirm with the mentor |
+| D11 | Frontend: Next.js (App Router) + React 19 + TypeScript, SCSS modules with Stitch tokens, Monaco editor. HR/Admin sign in through `POST /api/v1/auth/login` | Built this way already; TypeScript compiles to JavaScript, so the spec's "React + JS" constraint holds — confirm with the mentor |
 
 ## Cross-cutting rules
 - Errors: `{"error": {"code": "STRING_CODE", "message": "human text", "details": {}}}`.

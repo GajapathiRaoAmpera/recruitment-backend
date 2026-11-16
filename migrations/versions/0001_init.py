@@ -14,7 +14,6 @@ depends_on = None
 
 # asyncpg runs ONE statement per op.execute, so the schema is a list of statements.
 UPGRADE = [
-    "create extension if not exists pgcrypto",
     "create type user_role as enum ('hr', 'super_admin')",
     "create type drive_status as enum ('draft', 'active', 'closed')",
     "create type round_type as enum "

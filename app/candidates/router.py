@@ -4,7 +4,7 @@ import zipfile
 from pathlib import PurePath
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +28,7 @@ from app.core.audit import audit
 from app.core.db import get_session
 from app.core.errors import AppError
 from app.drives import rounds as rounds_mod
+from app.notifications import round_invites
 
 router = APIRouter(tags=["candidates"])
 hr = require_role("hr")
@@ -165,6 +166,7 @@ async def list_candidates(
 async def shortlist(
     drive_id: UUID,
     body: ShortlistIn,
+    tasks: BackgroundTasks,
     user: StaffUser = Depends(hr),
     session: AsyncSession = Depends(get_session),
 ):
@@ -172,9 +174,10 @@ async def shortlist(
     n = await repo.set_shortlisted(session, drive_id, body.candidate_ids, body.shortlisted)
     await rounds_mod.ensure_rounds(session, drive_id)
     round_one = await rounds_mod.first_test_round(session, drive_id)
-    moved = await repo.sync_round_one(
+    changed = await repo.sync_round_one(
         session, drive_id, round_one, body.candidate_ids, body.shortlisted
     )
+    moved = len(changed)
     await audit(
         session,
         user.id,
@@ -184,6 +187,9 @@ async def shortlist(
         {"shortlisted": body.shortlisted, "count": n, "round_one": moved},
     )
     await session.commit()
+    if body.shortlisted:  # only the newly invited: re-shortlisting doesn't email twice
+        mails = await round_invites.for_round(session, round_one, changed, shortlisted=True)
+        tasks.add_task(round_invites.send_all, mails)
     return {"updated": n, "moved": moved}
 
 
