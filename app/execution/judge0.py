@@ -99,9 +99,20 @@ class Judge0Client:
 
     async def run_many(self, language: str, source: str, stdins: list[str]) -> list[RunResult]:
         """Run `source` once per stdin, in parallel on the workers. Results keep stdin order."""
-        lang = LANGUAGES[language]  # KeyError = programming error: validate the language upstream
         if not 1 <= len(stdins) <= MAX_BATCH:
             raise ValueError(f"run_many takes 1..{MAX_BATCH} inputs, got {len(stdins)}")
+        return await self.run_sources(language, [source] * len(stdins), stdins)
+
+    async def run_sources(
+        self, language: str, sources: list[str], stdins: list[str] | None = None
+    ) -> list[RunResult]:
+        """Run each source once (with the stdin at the same index, default empty), in one
+        batch. Results keep source order. SQL questions use this: SQLite ignores stdin, so
+        each dataset is part of its own source."""
+        lang = LANGUAGES[language]  # KeyError = programming error: validate the language upstream
+        stdins = [""] * len(sources) if stdins is None else stdins
+        if not 1 <= len(sources) <= MAX_BATCH or len(stdins) != len(sources):
+            raise ValueError(f"run_sources takes 1..{MAX_BATCH} sources, got {len(sources)}")
         lim = lang.limits
         body = {
             "submissions": [
@@ -113,7 +124,7 @@ class Judge0Client:
                     "wall_time_limit": lim.wall_time_s,
                     "memory_limit": lim.memory_kb,
                 }
-                for stdin in stdins
+                for source, stdin in zip(sources, stdins, strict=True)
             ]
         }
         try:

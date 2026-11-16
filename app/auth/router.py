@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import entry, repo, staff
 from app.auth.schemas import (
     ConfirmIn,
+    EntryRoundsOut,
     ForgotIn,
     LoginIn,
     LoginOut,
@@ -86,6 +87,15 @@ async def entry_steps(
     if await repo.get_invite_target(session, who.candidate_id, round_id) is None:
         raise AppError(403, "NOT_INVITED", "You are not invited to this round")
     return await repo.latest_steps(session, who.candidate_id, round_id)
+
+
+@router.get("/entry/rounds", response_model=EntryRoundsOut)
+async def entry_rounds(
+    who: entry.Entry = Depends(entry.current_entry),
+    session: AsyncSession = Depends(get_session),
+) -> EntryRoundsOut:
+    """The same round list POST /entry/verify returned, fresh (read only, nothing logged)."""
+    return EntryRoundsOut(rounds=await entry.rounds_for(session, who.candidate_id))
 
 
 @router.post("/entry/confirm", status_code=204)

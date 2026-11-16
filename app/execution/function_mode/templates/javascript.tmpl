@@ -1,0 +1,70 @@
+
+// ---- driver (added by the judge): read the case, call the function, print the result ----
+;(function () {
+  const drvTypes = @@PARAM_TYPES@@;
+  const drvRet = @@RETURN_TYPE@@;
+  function drvFail(msg) {
+    process.stderr.write(msg + '\n');
+    process.exit(1);
+  }
+  function drvDouble(x) {
+    let s;
+    const r = x * 1e5;
+    // exact ties (x * 64 is whole): round half to even, as C, Python, Java and Go do
+    if (Number.isInteger(x * 64) && Math.abs(r) < 9e15 && r - Math.floor(r) === 0.5) {
+      const f = Math.floor(r);
+      s = ((f % 2 === 0 ? f : f + 1) / 1e5).toFixed(5);
+    } else {
+      s = x.toFixed(5);
+    }
+    return s === '-0.00000' ? '0.00000' : s;
+  }
+  // canonical text of v as type t; throws a string saying what t needs
+  function drvFmt(t, v) {
+    if (t === 'int' || t === 'long') {
+      if (typeof v === 'bigint') {
+        const lo = t === 'int' ? -(2n ** 31n) : -(2n ** 63n);
+        if (v < lo || v > -lo - 1n) throw 'a whole number that fits in ' + (t === 'int' ? '32' : '64') + ' bits';
+        return v.toString();
+      }
+      if (typeof v !== 'number' || !Number.isInteger(v)) throw 'a whole number';
+      if (t === 'int' && (v < -2147483648 || v > 2147483647)) throw 'a whole number that fits in 32 bits';
+      return Number.isSafeInteger(v) ? String(v) : BigInt(v).toString();
+    }
+    if (t === 'double') {
+      if (typeof v !== 'number' || !Number.isFinite(v)) throw 'a finite number';
+      return drvDouble(v);
+    }
+    if (t === 'bool') {
+      if (typeof v !== 'boolean') throw 'true or false';
+      return v ? 'true' : 'false';
+    }
+    if (t === 'string') {
+      if (typeof v !== 'string') throw 'a string';
+      return JSON.stringify(v);
+    }
+    if (!Array.isArray(v)) throw 'an array';
+    return '[' + v.map((x) => drvFmt(t.slice(0, -2), x)).join(',') + ']';
+  }
+  const drvLines = require('fs').readFileSync(0, 'utf8').split('\n');
+  if (drvLines.length < drvTypes.length) drvFail('driver: the test case has too few input lines');
+  const drvArgs = drvTypes.map((t, i) => JSON.parse(drvLines[i]));
+  const drvWrite = process.stdout.write;
+  process.stdout.write = process.stderr.write.bind(process.stderr); // student prints -> stderr
+  let drvResult;
+  try {
+    drvResult = @@FUNCTION@@(...drvArgs);
+  } finally {
+    process.stdout.write = drvWrite;
+  }
+  let drvOut;
+  try {
+    drvOut = drvFmt(drvRet, drvResult);
+  } catch (e) {
+    if (typeof e !== 'string') throw e;
+    let shown;
+    try { shown = JSON.stringify(drvResult); } catch (_) { shown = String(drvResult); }
+    drvFail('@@FUNCTION@@ returned ' + String(shown).slice(0, 200) + ', but it must return ' + drvRet + ' (' + e + ')');
+  }
+  process.stdout.write(drvOut + '\n');
+})();

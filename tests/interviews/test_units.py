@@ -320,3 +320,34 @@ async def test_sign_in_only_finds_students_moved_into_an_open_round():
     assert "r.status = 'active'" in seen["sql"]
     assert "rc.round_id = r.id and rc.candidate_id = c.id" in seen["sql"]
     assert "rc.status in ('invited', 'in_progress')" in seen["sql"]
+
+
+def test_history_brief_orders_weak_topics_and_trims_code():
+    rows = [
+        {"kind": "mcq", "topic": "Percentages", "marks": 1},
+        {"kind": "mcq", "topic": "Percentages", "marks": 1},
+        {"kind": "mcq", "topic": "Probability", "marks": 0},
+        {"kind": "mcq", "topic": "Probability", "marks": 1},
+        {"kind": "coding", "body": "\n## Reverse words\nGiven...", "code": "x" * 5000,
+         "language": "python", "passed_cases": 4, "total_cases": 6},
+        {"kind": "coding", "body": "Merge intervals", "code": None, "language": None,
+         "passed_cases": None, "total_cases": None},
+    ]  # fmt: skip
+    out = prompts.format_history(rows, cgpa=7.9)
+    assert "CGPA: 7.9" in out
+    assert out.index("Probability 1/2") < out.index("Percentages 2/2")
+    assert "Reverse words (python, 4/6 test cases passed)" in out
+    assert "x" * prompts.MAX_CODE_CHARS in out and "x" * (prompts.MAX_CODE_CHARS + 1) not in out
+    assert "Merge intervals (no language, not run)" in out and "no code submitted" in out
+    assert "never mention their scores" in out
+    assert prompts.format_history([]) == ""
+
+
+def test_history_goes_into_default_and_older_overrides():
+    base = dict(company="A", role="R", name="N", minutes=10, skills=[], jd="")
+    assert "BRIEF-X" in prompts.build_system_instruction(**base, history="BRIEF-X")
+    old = prompts.build_system_instruction(
+        **base, history="BRIEF-X", overrides={"interview_system": "Custom {name}"}
+    )
+    assert old == "Custom NBRIEF-X"
+    assert "{history}" not in prompts.build_system_instruction(**base)

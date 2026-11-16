@@ -1,0 +1,95 @@
+
+// ---- driver (added by the judge): read the case, call the function, print the result ----
+
+func drvFail(msg string) {
+	drvOs.Stderr.WriteString(msg + "\n")
+	drvOs.Exit(1)
+}
+
+func drvParse(lines []string, i int, v interface{}) {
+	if i >= len(lines) {
+		drvFail("driver: the test case has too few input lines")
+	}
+	if err := drvJson.Unmarshal([]byte(lines[i]), v); err != nil {
+		drvFail("driver: bad input: " + err.Error())
+	}
+}
+
+func drvFmtInt(x int) string     { return drvStrconv.Itoa(x) }
+func drvFmtLong(x int64) string  { return drvStrconv.FormatInt(x, 10) }
+func drvFmtBool(x bool) string   { return drvStrconv.FormatBool(x) }
+
+func drvFmtDouble(x float64) string {
+	s := drvStrconv.FormatFloat(x, 'f', 5, 64)
+	if s == "-0.00000" {
+		s = "0.00000"
+	}
+	return s
+}
+
+func drvFmtString(s string) string {
+	var b drvStrings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch c {
+		case '"':
+			b.WriteString("\\\"")
+		case '\\':
+			b.WriteString("\\\\")
+		case '\n':
+			b.WriteString("\\n")
+		case '\r':
+			b.WriteString("\\r")
+		case '\t':
+			b.WriteString("\\t")
+		case '\b':
+			b.WriteString("\\b")
+		case '\f':
+			b.WriteString("\\f")
+		default:
+			if c < 0x20 {
+				b.WriteString("\\u00")
+				b.WriteByte("0123456789abcdef"[c>>4])
+				b.WriteByte("0123456789abcdef"[c&15])
+			} else {
+				b.WriteByte(c)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+func drvFmtIntArray(v []int) string {
+	parts := make([]string, len(v))
+	for i, x := range v {
+		parts[i] = drvFmtInt(x)
+	}
+	return "[" + drvStrings.Join(parts, ",") + "]"
+}
+
+func drvFmtStringArray(v []string) string {
+	parts := make([]string, len(v))
+	for i, x := range v {
+		parts[i] = drvFmtString(x)
+	}
+	return "[" + drvStrings.Join(parts, ",") + "]"
+}
+
+func drvFmtIntMatrix(v [][]int) string {
+	parts := make([]string, len(v))
+	for i, x := range v {
+		parts[i] = drvFmtIntArray(x)
+	}
+	return "[" + drvStrings.Join(parts, ",") + "]"
+}
+
+func main() {
+	drvData, err := drvIoutil.ReadAll(drvOs.Stdin)
+	if err != nil {
+		drvFail("driver: cannot read input")
+	}
+	drvLines := drvStrings.Split(string(drvData), "\n")
+@@CALL@@
+}

@@ -83,25 +83,57 @@ async def get_invite_target(session: AsyncSession, candidate_id: UUID, round_id:
     return result.mappings().one_or_none()
 
 
-async def find_by_student_id(session: AsyncSession, student_id: str):
-    """One row per (candidate, round) the student can sit now; newest candidate first."""
+async def find_candidates(session: AsyncSession, student_id: str) -> list[RowMapping]:
+    """Every candidate with this Student ID (one per drive), whatever their rounds; newest
+    first. Sign-in must not depend on having an open round."""
     result = await session.execute(
         text(
-            "select c.id as candidate_id, c.dob, c.full_name, r.id as round_id, "
-            'r.type as round_type, t.id as test_id, r."Duration" as duration_min '
-            "from candidates c "
-            "join round_candidates rc on rc.candidate_id = c.id "
-            "and rc.status in ('invited', 'in_progress') "
-            "join rounds r on r.id = rc.round_id and r.status = 'active' "
-            "left join tests t on t.round_id = r.id "
-            "where lower(c.student_id) = lower(:sid) "
-            "and not exists (select 1 from attempts at join tests tt on tt.id = at.test_id "
-            "where tt.round_id = r.id and at.candidate_id = c.id and at.status = 'submitted') "
-            "order by c.created_at desc, r.position"
+            "select id as candidate_id, dob, full_name from candidates "
+            "where lower(student_id) = lower(:sid) order by created_at desc"
         ),
         {"sid": student_id.strip()},
     )
     return list(result.mappings())
+
+
+async def candidate_rounds(session: AsyncSession, candidate_id: UUID) -> list[RowMapping]:
+    """The rounds still active for this candidate (round active, their row invited/in_progress),
+    in pipeline order, with where their attempt stands. A submitted, locked or expired round is
+    listed too; rounds HR already completed/advanced are not. in_progress past its deadline
+    reads 'expired'."""
+    result = await session.execute(
+        text(
+            'select r.id as round_id, r.type as round_type, t.id as test_id, r."Duration" '
+            "as duration_min, case when a.id is null then 'not_started' "
+            "when a.status = 'in_progress' and a.deadline_at < now() then 'expired' "
+            "else cast(a.status as text) end as attempt_status "
+            "from round_candidates rc "
+            "join rounds r on r.id = rc.round_id and r.status = 'active' "
+            "left join tests t on t.round_id = r.id "
+            "left join attempts a on a.test_id = t.id and a.candidate_id = rc.candidate_id "
+            "where rc.candidate_id = :c and rc.status in ('invited', 'in_progress') "
+            "order by r.position"
+        ),
+        {"c": candidate_id},
+    )
+    return list(result.mappings())
+
+
+async def failure_round(session: AsyncSession, candidate_id: UUID) -> UUID | None:
+    """The round a wrong-DOB try is logged against (verification_logs needs one, FK): their
+    first open round as before, else their latest round, so a candidate whose rounds are all
+    finished is still counted toward the lockout. None only if they are in no round at all."""
+    result = await session.execute(
+        text(
+            "select rc.round_id from round_candidates rc join rounds r on r.id = rc.round_id "
+            "where rc.candidate_id = :c order by "
+            "(r.status = 'active' and rc.status in ('invited', 'in_progress')) desc, "
+            "case when r.status = 'active' and rc.status in ('invited', 'in_progress') "
+            "then r.position end, r.position desc limit 1"
+        ),
+        {"c": candidate_id},
+    )
+    return result.scalar_one_or_none()
 
 
 async def recent_failures(session: AsyncSession, candidate_id: UUID) -> int:

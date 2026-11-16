@@ -1,3 +1,4 @@
+import json
 from uuid import UUID
 
 from sqlalchemy import RowMapping, text
@@ -8,9 +9,9 @@ from app.execution.coding_questions.schemas import CaseIn
 # HR / Super Admin only: reference_solution must never reach a student-facing query
 _COLS = (
     "id, body, difficulty, tags, marks, approved, created_by, created_at, "
-    "reference_solution, reference_language"
+    "reference_solution, reference_language, mode, signature, sql_schema, sql_order_matters"
 )
-_LIST_COLS = "id, body, difficulty, tags, marks, approved, created_by, created_at"
+_LIST_COLS = "id, body, difficulty, tags, marks, approved, created_by, created_at, mode"
 
 
 async def insert_question(
@@ -23,6 +24,10 @@ async def insert_question(
     *,
     reference_solution: str | None = None,
     reference_language: str | None = None,
+    mode: str = "stdin",
+    signature: dict | None = None,
+    sql_schema: str | None = None,
+    sql_order_matters: bool | None = None,
 ) -> RowMapping:
     """Manual authoring (no reference): HR wrote it, so it is approved from the start.
     AI drafts (with a reference solution) start unapproved and ai_generated."""
@@ -30,9 +35,11 @@ async def insert_question(
     rows = await session.execute(
         text(
             "insert into questions (kind, body, tags, difficulty, marks, approved, ai_generated, "
-            "created_by, reference_solution, reference_language) "
+            "created_by, reference_solution, reference_language, mode, signature, sql_schema, "
+            "sql_order_matters) "
             "values ('coding', :body, cast(:tags as text[]), cast(:difficulty as difficulty), "
-            ":marks, :approved, :ai, :owner, :ref, :ref_lang) "
+            ":marks, :approved, :ai, :owner, :ref, :ref_lang, :mode, cast(:signature as jsonb), "
+            ":sql_schema, :sql_order_matters) "
             f"returning {_COLS}"
         ),
         {
@@ -45,6 +52,10 @@ async def insert_question(
             "owner": owner_id,
             "ref": reference_solution,
             "ref_lang": reference_language,
+            "mode": mode,
+            "signature": None if signature is None else json.dumps(signature),
+            "sql_schema": sql_schema,
+            "sql_order_matters": sql_order_matters,
         },
     )
     return rows.mappings().one()
@@ -146,7 +157,13 @@ async def has_answers(session: AsyncSession, question_id: UUID) -> bool:
 
 async def update_question(session: AsyncSession, question_id: UUID, changes: dict) -> RowMapping:
     # keys come from CodingQuestionPatch, never from raw input
-    casts = {"difficulty": "cast(:difficulty as difficulty)", "tags": "cast(:tags as text[])"}
+    casts = {
+        "difficulty": "cast(:difficulty as difficulty)",
+        "tags": "cast(:tags as text[])",
+        "signature": "cast(:signature as jsonb)",
+    }
+    if "signature" in changes and changes["signature"] is not None:
+        changes = {**changes, "signature": json.dumps(changes["signature"])}
     sets = ", ".join(f"{k} = {casts.get(k, f':{k}')}" for k in changes)
     rows = await session.execute(
         text(f"update questions set {sets} where id = :id returning {_COLS}"),

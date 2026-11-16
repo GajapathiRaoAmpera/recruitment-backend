@@ -28,7 +28,11 @@ class ProgressRow(BaseModel):
     started_at: datetime | None
     submitted_at: datetime | None
     marks: float | None
+    # every tab switch ever reported (violations rows), so it never drops when HR's resume
+    # restarts the student's own counter (attempts.tab_switches) at 0
     tab_switches: int
+    attempt_id: UUID | None  # for POST /attempts/{id}/resume; None = not started
+    resume_count: int  # HR resumes of this attempt (audit_logs 'attempt.resume')
 
 
 class RoundProgress(BaseModel):
@@ -49,12 +53,16 @@ _ROWS = (
     + _STEP_COLS
     + ", att.status as attempt_status, att.started_at, att.submitted_at, att.marks, "
     "coalesce((select count(*) from violations v where v.attempt_id = att.id "
-    "and v.kind = 'tab_switch'), 0) as tab_switches "
+    "and v.kind = 'tab_switch'), 0) as tab_switches, "
+    "att.id as attempt_id, coalesce(res.n, 0) as resume_count "
     "from round_candidates rc join candidates c on c.id = rc.candidate_id "
     "left join lateral (select a.id, a.status, a.started_at, a.submitted_at, a.marks "
     "from attempts a join tests t on t.id = a.test_id "
     "where t.round_id = rc.round_id and a.candidate_id = c.id "
     "order by a.started_at desc limit 1) att on true "
+    "left join (select entity_id, count(*) as n from audit_logs "
+    "where action = 'attempt.resume' and entity = 'attempt' group by entity_id) res "
+    "on res.entity_id = cast(att.id as text) "
     "where rc.round_id = :r order by c.full_name"
 )
 

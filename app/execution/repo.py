@@ -34,6 +34,25 @@ async def is_coding_question_of_attempt(
     return rows.first() is not None
 
 
+async def function_signature(session: AsyncSession, question_id: UUID):
+    """The question's signature (raw jsonb) when it is a function-mode question, else None."""
+    rows = await session.execute(
+        text("select signature from questions where id = :q and mode = 'function'"),
+        {"q": question_id},
+    )
+    return rows.scalar_one_or_none()
+
+
+async def sql_setup(session: AsyncSession, question_id: UUID) -> RowMapping | None:
+    """{sql_schema, sql_order_matters} when it is a SQL question, else None. Never the
+    reference query."""
+    rows = await session.execute(
+        text("select sql_schema, sql_order_matters from questions where id = :q and mode = 'sql'"),
+        {"q": question_id},
+    )
+    return rows.mappings().one_or_none()
+
+
 async def load_cases(
     session: AsyncSession, question_id: UUID, *, samples_only: bool
 ) -> list[CaseSpec]:
