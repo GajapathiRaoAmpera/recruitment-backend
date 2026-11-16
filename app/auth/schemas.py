@@ -41,10 +41,27 @@ class VerifyIn(BaseModel):
     dob: date
 
 
+AttemptStatus = Literal["not_started", "in_progress", "locked", "submitted", "expired"]
+
+
+class EntryRound(BaseModel):
+    """One round the student is in. Same list from POST /entry/verify and GET /entry/rounds."""
+
+    round_id: str
+    type: str
+    test_id: str | None
+    duration_min: float | None
+    attempt_status: AttemptStatus  # in_progress past its deadline reads "expired"
+
+
 class VerifyOut(BaseModel):
     entry_token: str
     candidate: dict[str, str]
-    rounds: list[dict[str, str | float | None]]  # round_id, type, test_id, duration_min
+    rounds: list[EntryRound]
+
+
+class EntryRoundsOut(BaseModel):
+    rounds: list[EntryRound]
 
 
 class StepIn(BaseModel):

@@ -8,11 +8,12 @@ from app.core.db import get_session
 from app.main import app
 
 HR = StaffUser(id=uuid.uuid4(), email="h@x.com", full_name="H", role="hr")
-DRIVE, ROUND, CID = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+DRIVE, ROUND, CID, AID = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 ROW = {
     "id": ROUND, "type": "aptitude", "status": "active",  # the round lookup
     "candidate_id": CID, "student_id": "S1", "full_name": "Asha", "attempt_status": "submitted",
     "started_at": None, "submitted_at": None, "marks": 7, "tab_switches": 2,
+    "attempt_id": AID, "resume_count": 1,
     "step_id_dob": True, "step_location": True, "step_terms": False, "step_fullscreen": None,
 }  # fmt: skip
 
@@ -33,10 +34,11 @@ class Result:
 
 class Session:
     def __init__(self, rows):
-        self.rows, self.params = rows, []
+        self.rows, self.params, self.sql = rows, [], []
 
     async def execute(self, stmt, params=None):
         self.params.append(params)
+        self.sql.append(" ".join(str(stmt).split()))
         return Result(self.rows)
 
 
@@ -85,3 +87,18 @@ def test_list_rounds_is_scoped_to_owner():
     r = c.get(f"/api/v1/drives/{DRIVE}/rounds")
     assert r.status_code == 200 and r.json()[0]["type"] == "aptitude"
     assert s.params[0]["o"] == HR.id
+
+
+def test_progress_has_attempt_id_and_resume_count():
+    not_started = {**ROW, "candidate_id": uuid.uuid4(), "attempt_status": None,
+                   "attempt_id": None, "resume_count": 0, "tab_switches": 0}  # fmt: skip
+    c, s = client([ROW, not_started])
+    a, b = c.get(URL).json()["candidates"]
+    assert (a["attempt_id"], a["resume_count"]) == (str(AID), 1)
+    assert (b["attempt_id"], b["resume_count"]) == (None, 0)
+    rows_sql = s.sql[1]
+    # resume_count comes from the audit rows; tab_switches stays the historical total (violations
+    # rows), so a resume, which restarts the student's own counter at 0, never lowers it
+    assert "from audit_logs where action = 'attempt.resume'" in rows_sql
+    assert "from violations v where v.attempt_id = att.id and v.kind = 'tab_switch'" in rows_sql
+    assert "a.tab_switches" not in rows_sql
