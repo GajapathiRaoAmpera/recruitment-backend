@@ -96,7 +96,7 @@ def fakes(monkeypatch):
 
     async def sync(_, d, rid, ids, v):
         QUERY["sync"] = (rid, ids, v)
-        return len(ids)
+        return list(ids)
 
     async def ensure(*_):
         return None
@@ -197,13 +197,14 @@ def test_bad_filter_values_422():
     assert client.get(f"/api/v1/drives/{DRIVE}/candidates?cursor=abc").status_code == 422
 
 
-def test_shortlist():
+def test_shortlist(no_candidate_mail):
     ids = [str(CAND)]
     r = client.post(
         f"/api/v1/drives/{DRIVE}/shortlist", json={"candidate_ids": ids, "shortlisted": True}
     )
     assert r.json() == {"updated": 1, "moved": 1} and QUERY["sl"][1] is True
     assert QUERY["sync"] == (ROUND_ONE, [CAND], True)  # invited to Round 1
+    assert no_candidate_mail == [(ROUND_ONE, [CAND], True)]  # and emailed
     assert (
         client.post(
             f"/api/v1/drives/{DRIVE}/shortlist", json={"candidate_ids": [], "shortlisted": True}

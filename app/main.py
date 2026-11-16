@@ -2,6 +2,7 @@ from fastapi import APIRouter, FastAPI
 
 from app.admin.progress import router as admin_progress_router
 from app.admin.router import router as admin_router
+from app.advance.router import router as advance_router
 from app.attempts.router import router as attempts_router
 from app.attempts.state_router import router as attempt_state_router
 from app.auth.router import router as auth_router
@@ -9,8 +10,12 @@ from app.candidates.router import router as candidates_router
 from app.core.errors import install_error_handlers
 from app.drives.progress import router as progress_router
 from app.drives.router import router as drives_router
+from app.execution.coding_questions.router import router as coding_questions_router
+from app.execution.results.router import router as results_router
 from app.execution.router import router as execution_router
+from app.execution.test_config.router import router as test_config_router
 from app.integrity.router import router as integrity_router
+from app.interviews.router import router as interviews_router
 from app.papers.router import router as papers_router
 
 app = FastAPI(title="Ampera Campus Hire API", version="0.1.0")
@@ -34,7 +39,12 @@ api.include_router(drives_router)
 api.include_router(progress_router)
 api.include_router(papers_router)
 api.include_router(execution_router)
+api.include_router(coding_questions_router)
+api.include_router(test_config_router)
+api.include_router(results_router)
 api.include_router(integrity_router)
+api.include_router(advance_router)
+api.include_router(interviews_router)
 app.include_router(api)
 
 

@@ -1,11 +1,12 @@
-# 03 — Database Schema (Supabase Postgres)
+# 03 — Database Schema (Azure Database for PostgreSQL)
 
 This is the design. The first Alembic migration implements it verbatim; after that, **changes go in new migrations and this doc is updated in the same PR**.
 
-Added beyond the PDF table list: `round_candidates` (who is in which round, with what result) and `audit_logs` (NFR auditability). `users.id` = Supabase `auth.users.id`.
+Hosting: Azure Database for PostgreSQL Flexible Server (PG 18). Tables live in the schema named by `DB_SCHEMA` (`campushire` on Azure; the app sets it as `search_path`, so SQL stays unqualified). No extensions are needed: `gen_random_uuid()` is built into Postgres 13+. 0001/0004 were edited (2026-11-14) to drop `pgcrypto`, `vector` and the unused `question_embeddings` table, so older databases built from the original files still have them; nothing reads them.
+
+Added beyond the PDF table list: `round_candidates` (who is in which round, with what result) and `audit_logs` (NFR auditability). Staff passwords live in `users` (0009); there is no external auth provider.
 
 ```sql
-create extension if not exists pgcrypto;
 
 create type user_role       as enum ('hr', 'super_admin');
 create type drive_status    as enum ('draft', 'active', 'closed');
@@ -18,12 +19,17 @@ create type question_kind   as enum ('mcq', 'coding');
 create type attempt_status  as enum ('not_started', 'in_progress', 'locked', 'submitted', 'expired');
 
 create table users (
-  id          uuid primary key,                       -- = auth.users.id
+  id          uuid primary key default gen_random_uuid(),
   email       text not null unique,
   full_name   text not null,
   role        user_role not null,
   is_active   boolean not null default true,
-  created_at  timestamptz not null default now()
+  created_at  timestamptz not null default now(),
+  -- 0009: own auth (Supabase Auth removed)
+  password_hash    text,                  -- scrypt (app/auth/passwords.py); null until invite link used
+  password_set_at  timestamptz,           -- bumped on every set: older set-password links stop working
+  failed_logins    int not null default 0,
+  locked_until     timestamptz            -- 5 wrong passwords in a row -> now() + 15 min
 );
 
 create table drives (
@@ -53,7 +59,7 @@ create table candidates (
 create table resumes (
   id             uuid primary key default gen_random_uuid(),
   candidate_id   uuid not null unique references candidates(id) on delete cascade,
-  storage_path   text not null,                        -- Supabase Storage key
+  storage_path   text not null,                        -- file key under RESUME_DIR (server disk)
   extracted_text text,
   skills         text[] not null default '{}',
   cgpa           numeric(4,2),
@@ -148,12 +154,15 @@ create table answers (
   attempt_id    uuid not null references attempts(id) on delete cascade,
   question_id   uuid not null references questions(id),
   response      jsonb,                                 -- mcq choice
-  code          text,
+  code          text,                                  -- coding: last SUBMITTED code
   language      text,
   passed_cases  int,
   total_cases   int,
-  marks         numeric(5,2),
-  updated_at    timestamptz not null default now(),
+  marks         numeric(5,2),                          -- coding: set by submit-code
+  updated_at    timestamptz not null default now(),    -- coding: last submit time
+  draft_code     text,                                 -- 0006: coding draft (editor autosave)
+  draft_language text,
+  draft_saved_at timestamptz,
   unique (attempt_id, question_id)
 );
 
@@ -162,8 +171,8 @@ create table interviews (
   round_id      uuid not null references rounds(id) on delete cascade,
   candidate_id  uuid not null references candidates(id) on delete cascade,
   status        text not null default 'scheduled',     -- scheduled|live|completed|failed
-  transcript    jsonb,                                 -- [{role, text, ts}]
-  ai_scores     jsonb,                                 -- rubric (01-requirements open decisions)
+  transcript    jsonb,                                 -- [{role: ai|candidate, kind: spoken|typed|question, text, language, ts}]
+  ai_scores     jsonb,                                 -- {communication, technical_depth, problem_solving, culture: 1-5, sentiment{overall, confidence, note}, summary, model, evaluated_at} | {pending: true} | {error}
   hr_notes      text,
   started_at    timestamptz,
   ended_at      timestamptz,
@@ -288,20 +297,14 @@ alter table questions add column topic text;
 alter table questions add column source_number int;     -- number within its subject in the PDF
 alter table questions add column warnings text[] not null default '{}';  -- parse warnings
 
-create table question_embeddings (
-  question_id  uuid primary key references questions(id) on delete cascade,
-  embedding    vector(384) not null,                    -- = settings.embedding_dim (all-MiniLM-L6-v2)
-  model        text not null
-);
-
 create index questions_source_id_idx on questions (source_id);
 create index questions_subject_idx on questions (subject);
 alter table question_sources enable row level security;
-alter table question_embeddings enable row level security;
 
--- D8: RLS on, no policies → anon/authenticated keys read nothing. API uses the service connection.
+-- D8: RLS on, no policies → no other role reads anything. API connects as the owning role.
+-- (0008: the loop uses current_schema(), so it covers DB_SCHEMA, not only public)
 do $$ declare t text; begin
-  for t in select tablename from pg_tables where schemaname = 'public' loop
+  for t in select tablename from pg_tables where schemaname = current_schema() loop
     execute format('alter table %I enable row level security', t);
   end loop;
 end $$;
@@ -313,11 +316,19 @@ end $$;
 - Ranking: `order by marks desc, time_taken_sec asc`.
 - `questions.answer` and `test_cases where is_sample = false` are only selected by HR/scoring code.
 - `questions.explanation` and `paper_drafts.pool` (answers + why) are only selected by HR/Super Admin code.
+- `questions.reference_solution` / `reference_language` are only selected by HR/Super Admin code (`app/execution/coding_questions/repo.py`); student queries (`GET /attempt`, run/submit) name their columns and never select them.
 - `paper_drafts.pool` changes only while `status = 'draft'`; `accepted` is reached only from `draft` and freezes it.
 - A pool question is written to `questions` once (same id, `on conflict (id) do nothing`), on the first send; `persisted_at` records it.
 - `paper_issues` rows are never rewritten: sending again to the same candidate is a no-op.
 - Bank questions (`questions.source_id is not null`) are inserted `approved = false`; only approved questions of `is_active` + `status = 'ready'` sources are retrieved for papers. Deleting a source hard-deletes its questions and embeddings (FK cascade); paper pools hold their own copies with new ids, so sent papers are unaffected.
 - A draft in `generating` for more than 15 minutes is reported as `failed` ("Generation timed out") on read.
+- Coding answers: submit-code sets `code`, `language`, `passed_cases`, `total_cases`, `updated_at` and `marks = round(questions.marks * passed / total, 2)` together, only while the attempt is `in_progress` or `locked` (row-locked), so the final submit's `attempts.marks = sum(answers.marks)` includes coding. A code draft only sets `draft_*`; the draft is newer than the submission when `draft_saved_at >= updated_at`.
 
 ## 0003_round_duration
 `rounds."Duration" double precision` (nullable): minutes the round's test runs, saved from the drive wizard. The name is quoted with a capital D because it was first created by hand in Supabase; always write it as `"Duration"` in SQL. `rounds.threshold` stays the cut-off %.
+
+## 0006_answer_code_drafts
+`answers.draft_code text`, `answers.draft_language text`, `answers.draft_saved_at timestamptz` (all nullable): the coding editor's autosave (`PUT /attempt/code-drafts/{question_id}`). `answers.code` stays the last submitted code, which matches `passed_cases` and `marks`; saving a draft never changes those columns or `updated_at`.
+
+## 0007_question_reference_solution
+`questions.reference_solution text`, `questions.reference_language text` (both nullable, check `questions_reference_pair`: set together or both null). Written by `POST /questions/generate`: the program whose Judge0 stdout became each test case's `expected` (`reference_language` is `'python'`). Such questions are inserted `approved = false`, `ai_generated = true`. Manual coding questions leave both null. HR/Super Admin only.

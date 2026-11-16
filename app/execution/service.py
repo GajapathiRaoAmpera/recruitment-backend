@@ -10,7 +10,15 @@ from app.core.errors import AppError
 from app.execution import repo, scoring
 from app.execution.deps import AttemptContext
 from app.execution.judge0 import Judge0Client
-from app.execution.schemas import CaseResult, CodeRequest, RunOut, SubmitCodeOut
+from app.execution.schemas import (
+    CaseResult,
+    CodeRequest,
+    DraftIn,
+    DraftOut,
+    DraftsOut,
+    RunOut,
+    SubmitCodeOut,
+)
 
 # shortcut: in-process, so it holds for one API process. With several workers or replicas
 # the guard needs a shared lock (Redis / advisory lock); Judge0 limits still bound the damage.
@@ -69,7 +77,7 @@ async def submit_code(
         await session.commit()
         result = await scoring.submit(client, body.language, body.code, cases)
     # a Judge0 outage raised above, so nothing is saved and the old result stays
-    await repo.save_submission(
+    saved = await repo.save_submission(
         session,
         ctx.attempt_id,
         body.question_id,
@@ -78,5 +86,32 @@ async def submit_code(
         result.passed,
         result.total,
     )
+    if not saved:  # the attempt was finalized while Judge0 ran: its total is already fixed
+        await session.rollback()
+        await _check_can_run(session, ctx, body.question_id)  # raises EXPIRED or LOCKED
+        raise AppError(409, "ATTEMPT_LOCKED", "This attempt is not open for answers")
     await session.commit()
     return SubmitCodeOut(passed=result.passed, total=result.total)
+
+
+async def save_draft(
+    session: AsyncSession, ctx: AttemptContext, question_id: UUID, body: DraftIn
+) -> None:
+    """Code draft (FR-17, AC-6): same open-attempt and question checks as Run, no Judge0.
+    Never overwrites the submitted code, its pass count or its marks."""
+    await _check_can_run(session, ctx, question_id)
+    await repo.save_draft(session, ctx.attempt_id, question_id, body.code, body.language)
+    await session.commit()
+
+
+async def drafts(session: AsyncSession, ctx: AttemptContext) -> DraftsOut:
+    """Refresh recovery: drafts newer than their last submission, in any attempt status."""
+    rows = await repo.newer_drafts(session, ctx.attempt_id)
+    return DraftsOut(
+        drafts={
+            str(r["question_id"]): DraftOut(
+                code=r["draft_code"], language=r["draft_language"], saved_at=r["draft_saved_at"]
+            )
+            for r in rows
+        }
+    )

@@ -13,6 +13,59 @@ async def get_user(session: AsyncSession, user_id: UUID) -> RowMapping | None:
     return result.mappings().one_or_none()
 
 
+async def get_login(session: AsyncSession, email: str) -> RowMapping | None:
+    """Everything sign-in needs, by email (case-insensitive). Never returned to clients."""
+    result = await session.execute(
+        text(
+            "select id, email, full_name, role, is_active, password_hash, password_set_at, "
+            "failed_logins, locked_until, locked_until > now() as locked "
+            "from users where lower(email) = lower(:e)"
+        ),
+        {"e": email.strip()},
+    )
+    return result.mappings().one_or_none()
+
+
+async def get_password_state(session: AsyncSession, user_id: UUID) -> RowMapping | None:
+    result = await session.execute(
+        text("select id, email, is_active, password_set_at from users where id = :id"),
+        {"id": user_id},
+    )
+    return result.mappings().one_or_none()
+
+
+async def login_failed(session: AsyncSession, user_id: UUID, max_failures: int) -> None:
+    """Count a wrong password; the max-th in a row locks the account for 15 minutes."""
+    await session.execute(
+        text(
+            "update users set failed_logins = case when failed_logins + 1 >= :max then 0 "
+            "else failed_logins + 1 end, "
+            "locked_until = case when failed_logins + 1 >= :max "
+            "then now() + interval '15 minutes' else locked_until end "
+            "where id = :id"
+        ),
+        {"id": user_id, "max": max_failures},
+    )
+
+
+async def login_ok(session: AsyncSession, user_id: UUID) -> None:
+    await session.execute(
+        text("update users set failed_logins = 0, locked_until = null where id = :id"),
+        {"id": user_id},
+    )
+
+
+async def set_password(session: AsyncSession, user_id: UUID, password_hash: str) -> None:
+    """New hash; bumping password_set_at makes every earlier set-password link stale."""
+    await session.execute(
+        text(
+            "update users set password_hash = :h, password_set_at = clock_timestamp(), "
+            "failed_logins = 0, locked_until = null where id = :id"
+        ),
+        {"id": user_id, "h": password_hash},
+    )
+
+
 async def get_invite_target(session: AsyncSession, candidate_id: UUID, round_id: UUID):
     """The candidate + round, only if the candidate is actually invited to that round."""
     result = await session.execute(

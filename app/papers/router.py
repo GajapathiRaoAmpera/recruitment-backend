@@ -83,7 +83,8 @@ async def accept_draft(
 async def send_papers(
     draft_id: UUID,
     body: SendRequest,
+    background: BackgroundTasks,
     actor: StaffUser = Depends(hr),
     session: AsyncSession = Depends(get_session),
 ):
-    return await service.send_papers(session, actor, draft_id, body.candidate_refs)
+    return await service.send_papers(session, actor, draft_id, body.candidate_refs, background)

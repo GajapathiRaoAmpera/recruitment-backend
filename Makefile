@@ -1,6 +1,6 @@
 # Shortcuts for the commands in CLAUDE.md. Run `make` to list them.
 .DEFAULT_GOAL := help
-.PHONY: help install dev test lint format check migrate migration current docker docker-run judge0-up judge0-down
+.PHONY: help install dev test test-judge0 lint format check migrate migration current docker docker-run judge0-up judge0-down
 
 help: ## List targets
 	@grep -E '^[a-z0-9-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  make %-12s %s\n", $$1, $$2}'
@@ -22,9 +22,12 @@ format: ## Auto-fix lint and format
 	uv run ruff check --fix .
 	uv run ruff format .
 
+test-judge0: ## AC-5: reference solutions in every language on a live Judge0 (needs `make judge0-up`)
+	uv run pytest -m integration -q
+
 check: lint test ## Everything CI checks, before you push
 
-migrate: ## Apply migrations to DATABASE_URL (shared Supabase: get a team OK first)
+migrate: ## Apply migrations to DATABASE_URL (shared Azure DB: get a team OK first)
 	uv run alembic upgrade head
 
 migration: ## New empty migration: make migration m="add_x_to_y"

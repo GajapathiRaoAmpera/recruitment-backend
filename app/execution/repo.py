@@ -58,16 +58,28 @@ async def save_submission(
     language: str,
     passed: int,
     total: int,
-) -> None:
-    """Latest submission wins. `marks` is left alone: how a pass count turns into marks
-    (level weighting) is still an open decision."""
+) -> bool:
+    """Latest submission wins, and sets the answer's marks: question marks x passed / total,
+    rounded to 2 places (no level weighting). Final submit sums answers.marks into
+    attempts.marks, so coding counts in the attempt total.
+
+    Locks the attempt row first. If the attempt was finalized (submitted / expired) while
+    Judge0 ran, nothing is saved and this returns False: attempts.marks is already summed."""
+    status = await session.execute(
+        text("select status from attempts where id = :a for update"), {"a": attempt_id}
+    )
+    if status.scalar_one_or_none() not in ("in_progress", "locked"):
+        return False
     await session.execute(
         text(
             "insert into answers (attempt_id, question_id, code, language, passed_cases, "
-            "total_cases) values (:a, :q, :code, :lang, :passed, :total) "
+            "total_cases, marks) "
+            "select :a, q.id, :code, :lang, cast(:passed as int), cast(:total as int), "
+            "round(q.marks * cast(:passed as int) / nullif(cast(:total as int), 0), 2) "
+            "from questions q where q.id = :q "
             "on conflict (attempt_id, question_id) do update set code = excluded.code, "
             "language = excluded.language, passed_cases = excluded.passed_cases, "
-            "total_cases = excluded.total_cases, updated_at = now()"
+            "total_cases = excluded.total_cases, marks = excluded.marks, updated_at = now()"
         ),
         {
             "a": attempt_id,
@@ -78,3 +90,33 @@ async def save_submission(
             "total": total,
         },
     )
+    return True
+
+
+async def save_draft(
+    session: AsyncSession, attempt_id: UUID, question_id: UUID, code: str, language: str
+) -> None:
+    """Editor autosave. Only the draft_* columns: `code` stays the last submitted code (it
+    matches passed_cases and marks) and `updated_at` stays the last submit time."""
+    await session.execute(
+        text(
+            "insert into answers (attempt_id, question_id, draft_code, draft_language, "
+            "draft_saved_at) values (:a, :q, :code, :lang, now()) "
+            "on conflict (attempt_id, question_id) do update set draft_code = excluded.draft_code, "
+            "draft_language = excluded.draft_language, draft_saved_at = excluded.draft_saved_at"
+        ),
+        {"a": attempt_id, "q": question_id, "code": code, "lang": language},
+    )
+
+
+async def newer_drafts(session: AsyncSession, attempt_id: UUID) -> list[RowMapping]:
+    """Drafts saved at or after the question's last submission (or with no submission yet)."""
+    rows = await session.execute(
+        text(
+            "select question_id, draft_code, draft_language, draft_saved_at from answers "
+            "where attempt_id = :a and draft_code is not null "
+            "and (passed_cases is null or draft_saved_at >= updated_at)"
+        ),
+        {"a": attempt_id},
+    )
+    return list(rows.mappings())

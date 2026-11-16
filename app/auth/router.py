@@ -1,15 +1,50 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import entry, repo
-from app.auth.schemas import ConfirmIn, StaffUser, StepIn, VerifyIn, VerifyOut
+from app.auth import entry, repo, staff
+from app.auth.schemas import (
+    ConfirmIn,
+    ForgotIn,
+    LoginIn,
+    LoginOut,
+    SetPasswordIn,
+    StaffUser,
+    StepIn,
+    VerifyIn,
+    VerifyOut,
+)
 from app.auth.security import require_role
 from app.core.db import get_session
 from app.core.errors import AppError
 
 router = APIRouter(tags=["auth"])
+
+
+@router.post("/auth/login", response_model=LoginOut)
+async def login(body: LoginIn, session: AsyncSession = Depends(get_session)) -> LoginOut:
+    return await staff.login(session, body)
+
+
+@router.post("/auth/forgot-password", status_code=204)
+async def forgot_password(
+    body: ForgotIn, tasks: BackgroundTasks, session: AsyncSession = Depends(get_session)
+) -> Response:
+    # Always 204, sent in the background: neither the answer nor its timing says if the
+    # account exists. shortcut: no per-address rate limit; add one if inboxes get spammed.
+    mail = await staff.reset_link_for(session, body.email)
+    if mail:
+        tasks.add_task(staff.send_quietly, *mail)
+    return Response(status_code=204)
+
+
+@router.post("/auth/set-password", status_code=204)
+async def set_password(
+    body: SetPasswordIn, session: AsyncSession = Depends(get_session)
+) -> Response:
+    await staff.set_password(session, body)
+    return Response(status_code=204)
 
 
 @router.get("/me", response_model=StaffUser)

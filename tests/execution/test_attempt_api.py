@@ -25,9 +25,13 @@ def ran(stdout="", **kw) -> RunResult:
 
 class FakeSession:
     commits = 0
+    rollbacks = 0
 
     async def commit(self):
         self.commits += 1
+
+    async def rollback(self):
+        self.rollbacks += 1
 
 
 class FakeJudge0:
@@ -54,6 +58,7 @@ def env(monkeypatch):
         in_test=True,
         cases=cases,
         saved=[],
+        save_ok=True,  # False = the attempt was finalized while Judge0 ran
         loads=[],
         session=FakeSession(),
         judge0=FakeJudge0(),
@@ -70,7 +75,10 @@ def env(monkeypatch):
         return [c for c in state["cases"] if c.is_sample or not samples_only]
 
     async def save(_, *args):
+        if not state["save_ok"]:
+            return False
         state["saved"].append(args)
+        return True
 
     monkeypatch.setattr(repo, "get_attempt", get_attempt)
     monkeypatch.setattr(repo, "is_coding_question_of_attempt", in_test)
@@ -140,6 +148,28 @@ def test_submit_does_not_save_when_judge0_is_down(env):
     r = post("submit-code")
     assert r.status_code == 503 and r.json()["error"]["code"] == "EXECUTION_UNAVAILABLE"
     assert env["saved"] == []
+
+
+@pytest.mark.parametrize(
+    "after,code",
+    [
+        ({"status": "submitted", "past_deadline": False}, "ATTEMPT_LOCKED"),
+        ({"status": "submitted", "past_deadline": True, "auto_submitted": True}, "ATTEMPT_EXPIRED"),
+    ],
+)
+def test_submit_finalized_while_judge0_ran_saves_nothing(env, monkeypatch, after, code):
+    """The student (or the deadline) finalized the attempt during the Judge0 run: the total is
+    already summed, so the late result is refused instead of changing answers.marks."""
+    env["save_ok"] = False
+    states = iter([env["attempt"], after])
+
+    async def get_attempt(_, attempt_id):
+        return next(states)
+
+    monkeypatch.setattr(repo, "get_attempt", get_attempt)
+    r = post("submit-code")
+    assert r.status_code == 409 and r.json()["error"]["code"] == code
+    assert env["saved"] == [] and env["session"].rollbacks == 1
 
 
 def test_submit_with_no_cases_is_a_409(env):
