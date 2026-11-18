@@ -72,7 +72,7 @@ async def context(session: AsyncSession, interview_id: UUID, candidate_id: UUID)
             f"round({_MIN})::int as minutes, "
             f"i.started_at + make_interval(secs => {_MIN} * 60) as deadline_at, "
             "now() as server_now, d.company, d.role_title, d.jd_text, c.full_name, "
-            "coalesce(rs.skills, '{}') as skills, rs.cgpa, "
+            "coalesce(rs.skills, '{}') as skills, rs.cgpa, rs.extracted_text as resume_text, "
             "coalesce(jsonb_array_length(i.transcript), 0) as turns "
             "from interviews i join rounds r on r.id = i.round_id "
             "join drives d on d.id = r.drive_id join candidates c on c.id = i.candidate_id "
@@ -87,19 +87,31 @@ async def context(session: AsyncSession, interview_id: UUID, candidate_id: UUID)
 async def earlier_results(session: AsyncSession, round_id: UUID, candidate_id: UUID):
     """This candidate's answers in the drive's earlier test rounds (aptitude MCQs, coding).
 
-    One row per answer; prompts.format_history turns them into the interviewer's brief.
+    One row per answer, plus each coding problem of an attempted test they left blank (code and
+    cases null), so the interviewer can still name it. prompts.format_history builds the brief.
     """
+    earlier = (
+        "from rounds cur join rounds r on r.drive_id = cur.drive_id "
+        "and r.position < cur.position "
+        "join tests t on t.round_id = r.id "
+        "join attempts at on at.test_id = t.id and at.candidate_id = :c "
+    )
     result = await session.execute(
         text(
-            "select q.kind, coalesce(q.topic, q.subject, q.tags[1], 'general') as topic, "
-            "q.body, q.marks as max_marks, a.marks, a.code, a.language, "
-            "a.passed_cases, a.total_cases "
-            "from rounds cur join rounds r on r.drive_id = cur.drive_id "
-            "and r.position < cur.position "
-            "join tests t on t.round_id = r.id "
-            "join attempts at on at.test_id = t.id and at.candidate_id = :c "
-            "join answers a on a.attempt_id = at.id join questions q on q.id = a.question_id "
-            "where cur.id = :r order by r.position, q.kind, topic"
+            "select r.position, q.kind, "
+            "coalesce(q.topic, q.subject, q.tags[1], 'general') as topic, q.body, "
+            "q.marks as max_marks, a.marks, a.code, a.language, a.passed_cases, a.total_cases "
+            + earlier
+            + "join answers a on a.attempt_id = at.id join questions q on q.id = a.question_id "
+            "where cur.id = :r "
+            "union all "
+            "select r.position, q.kind, 'general', q.body, q.marks, null, null, null, null, null "
+            + earlier
+            + "join test_questions tq on tq.test_id = t.id "
+            "join questions q on q.id = tq.question_id and q.kind = 'coding' "
+            "where cur.id = :r and not exists (select 1 from answers a "
+            "where a.attempt_id = at.id and a.question_id = q.id) "
+            "order by 1, 2, 3"
         ),
         {"r": round_id, "c": candidate_id},
     )

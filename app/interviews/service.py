@@ -118,7 +118,9 @@ async def open_session(session: AsyncSession, who: tokens.InterviewAuth) -> Sess
         earlier_turns=earlier,
         reference=await reference_material(session, ctx),
         history=prompts.format_history(
-            await repo.earlier_results(session, ctx["round_id"], who.candidate_id), ctx["cgpa"]
+            await repo.earlier_results(session, ctx["round_id"], who.candidate_id),
+            ctx["cgpa"],
+            resume=prompts.resume_highlights(ctx.get("resume_text")),
         ),
         overrides=overrides,
     )

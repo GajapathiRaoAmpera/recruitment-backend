@@ -343,6 +343,7 @@ def test_history_brief_orders_weak_topics_and_trims_code():
     assert "x" * prompts.MAX_CODE_CHARS in out and "x" * (prompts.MAX_CODE_CHARS + 1) not in out
     assert "Merge intervals (no language, not run)" in out and "no code submitted" in out
     assert "never mention their scores" in out
+    assert "name the problem by its title" in out and "Never ask vaguely" in out
     assert prompts.format_history([]) == ""
 
 
@@ -388,3 +389,23 @@ def test_history_brief_lists_missed_questions_weakest_first_and_the_problem_stat
     assert "Problem: Two sum Given an array, return indices" in out
     assert "y" * prompts.MAX_PROBLEM_CHARS not in out  # statement excerpt is capped
     assert "time and space complexity" in out and "never read their code" in out
+
+
+def test_resume_highlights_keep_projects_and_experience_without_contact_details():
+    text = (
+        "Asha Rao\nasha@mail.com | +91 98765 43210 | https://github.com/asha\n"
+        "Summary\nMotivated developer.\nEducation\nB.Tech, XYZ College, 8.1 CGPA\n"
+        "PROJECTS\n(cid:127) Food delivery app: React + Node, JWT auth across two domains\n"
+        "Technical Skills\nPython, SQL\nInternship Experience:\n• Built RAG search at Acme\n"
+        "Declaration\nI hereby declare the above is true.\n"
+    )
+    out = prompts.resume_highlights(text)
+    assert "[PROJECTS]" in out and "Food delivery app: React + Node" in out
+    assert "[Internship Experience]" in out and "Built RAG search at Acme" in out
+    for gone in ("asha@mail.com", "98765", "github", "XYZ College", "Python, SQL", "declare"):
+        assert gone not in out
+    assert "cid" not in out
+    assert prompts.resume_highlights(None) == "" and prompts.resume_highlights("Just a name") == ""
+    brief = prompts.format_history([{"kind": "coding", "body": "Two Sum", "code": "x"}], resume=out)
+    assert brief.index("Coding round") < brief.index("Resume highlights")
+    assert "Never ask vaguely 'tell me about a project'" in brief
