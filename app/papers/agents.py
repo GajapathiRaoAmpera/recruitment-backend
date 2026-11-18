@@ -193,6 +193,7 @@ def build_generation_prompt(
     avoid: Sequence[str] = (),
     overrides: Mapping[str, str] | None = None,
     role: str | None = None,
+    feedback: str | None = None,
 ) -> tuple[str, str]:
     system = get_prompt(f"{PROMPT_GEN_PREFIX}{section}", overrides)
     track_name = "IT (software / computer science)" if track == "it" else "Non-IT"
@@ -213,6 +214,8 @@ def build_generation_prompt(
         recent = list(avoid)[-MAX_AVOID:]
         lines.append("Do not repeat or paraphrase any of these existing questions:")
         lines.extend(f"- {' '.join(t.split())[:200]}" for t in recent)
+    if feedback:
+        lines.append(f"A reviewer rejected an earlier version of this question because: {feedback}")
     return system, "\n".join(lines)
 
 
@@ -531,6 +534,7 @@ async def generate_batch(
     avoid: Sequence[str],
     overrides: Mapping[str, str] | None = None,
     role: str | None = None,
+    feedback: str | None = None,
 ) -> BatchResult:
     """Generate `count` (<= BATCH_SIZE) questions in ONE provider call; keep the schema-valid,
     non-duplicate ones.
@@ -553,6 +557,7 @@ async def generate_batch(
             avoid=[*avoid, *(q.text for q in result.accepted)],
             overrides=overrides,
             role=role,
+            feedback=feedback,
         )
         try:
             raw = await generator.complete_json(system=system, user=user)

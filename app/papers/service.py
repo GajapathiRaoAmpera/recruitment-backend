@@ -5,7 +5,7 @@ import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -19,6 +19,7 @@ from app.notifications import round_invites
 from app.papers import agents, builder, repo
 from app.papers import pool as pipeline
 from app.papers.agents import OnProgress
+from app.papers.generators import generate_questions
 from app.papers.schemas import (
     DraftDetail,
     DraftOut,
@@ -296,6 +297,126 @@ async def list_drafts(session: AsyncSession, actor: StaffUser) -> list[DraftOut]
     return [_out(r) for r in await repo.list_drafts(session, owner)]
 
 
+FIELDS = ("text", "options", "answer", "why")
+REGEN_TRIES = 5  # code generators: fresh seeds until the text is new; AI: 2 calls
+
+
+def llm_client(temperature: float = 0.0) -> agents.LlmClient:
+    """AI client for regenerating one question. Tests monkeypatch this."""
+    return agents.NvidiaClient(temperature=temperature)
+
+
+def _not_editable(verb: str) -> AppError:
+    return AppError(
+        409, "NOT_EDITABLE", f"Questions can only be {verb} while the paper is a draft."
+    )
+
+
+def _require_draft(d: Mapping, verb: str) -> None:
+    if d["status"] != "draft":
+        raise _not_editable(verb)
+
+
+def _index(pool: list[PoolQuestion], question_id: str) -> int:
+    index = next((i for i, q in enumerate(pool) if q.id == question_id), None)
+    if index is None:
+        raise AppError(404, "QUESTION_NOT_FOUND", "Question not found in this paper")
+    return index
+
+
+async def _save(session: AsyncSession, d: dict, pool: list[PoolQuestion], verb: str) -> dict:
+    """Re-run checks on `pool` and store both; the draft as it is now saved."""
+    settings = PaperSettings.model_validate(d["settings"])
+    pool_json = [q.model_dump() for q in pool]
+    checks_json = [c.model_dump() for c in _checks(settings, d["drive_ref"], pool)]
+    if not await repo.save_pool_and_checks(session, d["id"], pool_json, checks_json):
+        raise _not_editable(verb)
+    return {**d, "pool": pool_json, "checks": checks_json}
+
+
+def _norm(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+
+async def _replacement(
+    d: Mapping,
+    old: PoolQuestion,
+    pool: list[PoolQuestion],
+    reason: str | None,
+    overrides: Mapping[str, str],
+) -> PoolQuestion:
+    """A new question for old's level/section/style, different from every pool question."""
+    # the rejected text goes last: it is the newest entry in the AI's "do not repeat" list
+    taken = [q.text for q in pool if q.id != old.id] + [old.text]
+    if old.section == "technical":
+        settings = PaperSettings.model_validate(d["settings"])
+        client = llm_client(temperature=0.7)
+        for _ in range(2):
+            got = await agents.generate_batch(
+                client,
+                track=settings.track,
+                level=old.level,
+                section=old.section,
+                style=old.style,
+                topic=old.topic,
+                count=1,
+                avoid=taken,
+                overrides=overrides,
+                role=settings.role,
+                feedback=reason,
+            )
+            if got.accepted:
+                return got.accepted[0]
+    else:
+        seen = {_norm(t) for t in taken}
+        for _ in range(REGEN_TRIES):
+            seed = f"{d['id']}|regen|{uuid4()}"
+            q = generate_questions(old.section, old.level, 1, seed=seed)[0]
+            if _norm(q.text) not in seen:
+                return q
+    raise AppError(502, "REGENERATE_FAILED", "Could not write a different question. Try again.")
+
+
+async def regenerate_question(
+    session: AsyncSession,
+    actor: StaffUser,
+    draft_id: UUID,
+    question_id: str,
+    reason: str | None,
+) -> DraftDetail:
+    """Replace one pool question (same id, level, section; selection kept) with a new one."""
+    d = await _load(session, actor, draft_id)
+    _require_draft(d, "regenerated")
+    pool = _pool(d)
+    old = pool[_index(pool, question_id)]
+    overrides = await repo.get_prompt_overrides(session)
+    await session.rollback()  # no transaction held open across the AI call
+    new = await _replacement(d, old, pool, reason, overrides)
+
+    d = await _load(session, actor, draft_id, lock=True)
+    _require_draft(d, "regenerated")
+    pool = _pool(d)
+    index = _index(pool, question_id)
+    before = pool[index]
+    pool[index] = after = new.model_copy(update={"id": before.id, "selected": before.selected})
+    d = await _save(session, d, pool, "regenerated")
+    await audit(
+        session,
+        actor.id,
+        "paper_draft.question_regenerate",
+        ENTITY,
+        draft_id,
+        {
+            "question_id": question_id,
+            "reason": reason,
+            "from": {f: getattr(before, f) for f in FIELDS},
+            "to": {f: getattr(after, f) for f in FIELDS},
+        },
+    )
+    await session.commit()
+    return _detail(d, await repo.list_issues(session, draft_id))
+
+
 async def edit_question(
     session: AsyncSession,
     actor: StaffUser,
@@ -304,26 +425,13 @@ async def edit_question(
     body: QuestionEdit,
 ) -> DraftDetail:
     d = await _load(session, actor, draft_id, lock=True)
-    if d["status"] != "draft":
-        raise AppError(
-            409, "NOT_EDITABLE", "Questions can only be edited while the paper is a draft."
-        )
+    _require_draft(d, "edited")
     pool = _pool(d)
-    index = next((i for i, q in enumerate(pool) if q.id == question_id), None)
-    if index is None:
-        raise AppError(404, "QUESTION_NOT_FOUND", "Question not found in this paper")
+    index = _index(pool, question_id)
     before = pool[index]
     after = before.model_copy(update={**body.model_dump(), "edited": True})
     pool[index] = after
-    settings = PaperSettings.model_validate(d["settings"])
-    checks = _checks(settings, d["drive_ref"], pool)
-    pool_json = [q.model_dump() for q in pool]
-    checks_json = [c.model_dump() for c in checks]
-    if not await repo.save_pool_and_checks(session, draft_id, pool_json, checks_json):
-        raise AppError(
-            409, "NOT_EDITABLE", "Questions can only be edited while the paper is a draft."
-        )
-    fields = ("text", "options", "answer", "why")
+    d = await _save(session, d, pool, "edited")
     await audit(
         session,
         actor.id,
@@ -332,12 +440,11 @@ async def edit_question(
         draft_id,
         {
             "question_id": question_id,
-            "from": {f: getattr(before, f) for f in fields},
-            "to": {f: getattr(after, f) for f in fields},
+            "from": {f: getattr(before, f) for f in FIELDS},
+            "to": {f: getattr(after, f) for f in FIELDS},
         },
     )
     await session.commit()
-    d = {**d, "pool": pool_json, "checks": checks_json}
     return _detail(d, await repo.list_issues(session, draft_id))
 
 
@@ -346,10 +453,7 @@ async def set_selection(
 ) -> DraftDetail:
     """HR picks which pool questions may reach students; checks re-run on the selection."""
     d = await _load(session, actor, draft_id, lock=True)
-    if d["status"] != "draft":
-        raise AppError(
-            409, "NOT_EDITABLE", "Questions can only be selected while the paper is a draft."
-        )
+    _require_draft(d, "selected")
     pool = _pool(d)
     wanted = set(selected_ids)
     unknown = wanted - {q.id for q in pool}
@@ -361,14 +465,7 @@ async def set_selection(
             {"unknown": sorted(unknown)[:20]},
         )
     pool = [q.model_copy(update={"selected": q.id in wanted}) for q in pool]
-    settings = PaperSettings.model_validate(d["settings"])
-    checks = _checks(settings, d["drive_ref"], pool)
-    pool_json = [q.model_dump() for q in pool]
-    checks_json = [c.model_dump() for c in checks]
-    if not await repo.save_pool_and_checks(session, draft_id, pool_json, checks_json):
-        raise AppError(
-            409, "NOT_EDITABLE", "Questions can only be selected while the paper is a draft."
-        )
+    d = await _save(session, d, pool, "selected")
     await audit(
         session,
         actor.id,
@@ -378,7 +475,6 @@ async def set_selection(
         {"selected": len(wanted), "of": len(pool)},
     )
     await session.commit()
-    d = {**d, "pool": pool_json, "checks": checks_json}
     return _detail(d, await repo.list_issues(session, draft_id))
 
 

@@ -34,13 +34,23 @@ def live_config(system_instruction: str, voice: str | None) -> dict[str, Any]:
     config: dict[str, Any] = {
         "responseModalities": ["AUDIO"],
         "systemInstruction": {"parts": [{"text": system_instruction}]},
-        "inputAudioTranscription": {},
+        # a hint, not a lock: without it noise was transcribed as Spanish/Portuguese words
+        "inputAudioTranscription": {"languageCodes": ["en-IN", "en-US"]},
         "outputAudioTranscription": {},
         # lifts the 15-minute audio cap; the oldest turns drop out of the model's memory
         "contextWindowCompression": {"slidingWindow": {}},
         # each connection lasts ~10 min; the browser reconnects with the latest handle
         "sessionResumption": {},
-        # the answer box for written questions, and the integrity flag (a possible second voice)
+        # Live defaults to HIGH start sensitivity: room noise, typing and echo became "speech" that
+        # cut the interviewer off and got replies. LOW + a longer pause needs real speech.
+        "realtimeInputConfig": {
+            "automaticActivityDetection": {
+                "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
+                "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
+                "silenceDurationMs": 800,
+            }
+        },
+        # the interviewer opens a typing box on the candidate's screen for written questions
         "tools": [{"functionDeclarations": list(TOOLS)}],
     }
     if voice and voice.strip():

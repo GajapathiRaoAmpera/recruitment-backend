@@ -259,6 +259,9 @@ def test_session_starts_clock_and_mints_locked_token():
     assert instruction not in r.text and "systemInstruction" not in body["client_config"]
     assert body["client_config"]["tools"][0]["functionDeclarations"][0]["name"] == "show_answer_box"
     assert body["client_config"]["sessionResumption"] == {}
+    vad = body["client_config"]["realtimeInputConfig"]["automaticActivityDetection"]
+    assert vad["startOfSpeechSensitivity"] == "START_SENSITIVITY_LOW"
+    assert body["client_config"]["inputAudioTranscription"]["languageCodes"][0] == "en-IN"
     assert body["protocol"]["closing_phrase"] == "That concludes our interview."
     assert CALLS["mint"]["expire_at"] == NOW + timedelta(minutes=45)
     # FR AI interview: earlier rounds shape the questions, server side only
@@ -474,8 +477,6 @@ def test_typed_answer_keeps_code_indentation_and_language():
         {"role": "candidate", "kind": "question", "text": "x"},  # only the AI asks
         {"role": "candidate", "kind": "typed", "text": "x" * 8001},
         {"role": "candidate", "kind": "spoken", "text": "x" * 2001},
-        {"role": "candidate", "kind": "flag", "text": "x"},  # only the interviewer flags
-        {"role": "ai", "kind": "flag", "text": "x" * 2001},
     ],
 )
 def test_typed_turn_rules(turn):

@@ -115,6 +115,17 @@ class QuestionEdit(BaseModel):
         return self
 
 
+class RegenerateRequest(BaseModel):
+    """Why HR rejected the question; passed to the AI for Technical questions."""
+
+    reason: str | None = Field(default=None, max_length=300)
+
+    @model_validator(mode="after")
+    def _strip(self) -> "RegenerateRequest":
+        self.reason = (self.reason or "").strip() or None
+        return self
+
+
 class Check(BaseModel):
     id: str
     label: str

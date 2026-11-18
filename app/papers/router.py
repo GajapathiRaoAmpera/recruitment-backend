@@ -13,6 +13,7 @@ from app.papers.schemas import (
     DraftDetail,
     DraftOut,
     QuestionEdit,
+    RegenerateRequest,
     SelectionUpdate,
     SendRequest,
     SendResult,
@@ -60,6 +61,17 @@ async def edit_question(
     session: AsyncSession = Depends(get_session),
 ):
     return await service.edit_question(session, actor, draft_id, question_id, body)
+
+
+@router.post("/drafts/{draft_id}/questions/{question_id}/regenerate", response_model=DraftDetail)
+async def regenerate_question(
+    draft_id: UUID,
+    question_id: str,
+    body: RegenerateRequest,
+    actor: StaffUser = Depends(hr),
+    session: AsyncSession = Depends(get_session),
+):
+    return await service.regenerate_question(session, actor, draft_id, question_id, body.reason)
 
 
 @router.put("/drafts/{draft_id}/selection", response_model=DraftDetail)

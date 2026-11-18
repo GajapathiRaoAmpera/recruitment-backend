@@ -17,9 +17,18 @@ A shortlisted student talks to an AI interviewer by voice for 35–45 minutes (t
 
 ## Interviewer rules added 2026-11-16
 After a test run where the interviewer switched to Hindi and moved on before a typed answer was submitted:
-- **Platform rules** (`prompts.PLATFORM_RULES`) are always appended after the system prompt, also after a Super Admin override, so they can't be lost: English only (reply in English and ask the candidate to continue in English); one written question at a time (after `show_answer_box`, wait for the typed answer, no new question or second box until it is submitted and reviewed); never give a full or alternative solution; flag a second voice.
+- **Platform rules** (`prompts.PLATFORM_RULES`) are always appended after the system prompt, also after a Super Admin override, so they can't be lost: English only (reply in English and ask the candidate to continue in English); one written question at a time (after `show_answer_box`, wait for the typed answer, no new question or second box until it is submitted and reviewed); never give a full or alternative solution.
 - **The browser enforces the wait too**: a second `show_answer_box` while one is open is refused in the tool response, and if the interviewer's captions show an Indian-language script the browser sends a `[PLATFORM]` reminder to continue in English (at most every 20 s).
-- **Possible second voice** (`flag_concern` tool, kind `multiple_voices`): the model calls it when it hears another person; the browser stores it as a transcript turn of kind `flag`. Advisory only: HR sees it in the transcript, the scorer lists it in the summary but does not lower scores for it, and nothing is decided automatically. Detection is the model's own judgement on the audio and will miss some cases.
+- **Possible second voice** flag (`flag_concern`): removed 2026-11-18. It made the interviewer react to background noise and garbled captions during test runs.
+
+## Noise fixes 2026-11-18
+A test run showed noise, typing and echo read as speech ("aus", "¿Qué", "customer"), cutting the interviewer off and getting replies:
+- `realtimeInputConfig.automaticActivityDetection`: start and end sensitivity LOW, 800 ms silence (Live defaults to HIGH start sensitivity).
+- `inputAudioTranscription.languageCodes: ["en-IN", "en-US"]`: a hint so noise and accents aren't transcribed as other languages. Verified against the real API on 2026-11-18 (setup accepted; unknown fields there are rejected, so it is a recognised field).
+- The browser drops mic audio for 800 ms after each keypress in the answer box.
+- Platform rule: ignore short, unclear or noise-like audio and never say the connection dropped.
+- The answer box stays reopenable after Submit, so the candidate can fix it after a hint; a resubmission is sent marked `(revised)`. A new `show_answer_box` replaces it.
+- The check screen and room tips ask for headphones (the browser's echo cancellation missed some of the interviewer's own voice).
 - **Sharper brief from rounds 1 and 2**: the aptitude topics (weakest first) now come with up to 6 questions the candidate missed (question text only, never the answer key), and each coding answer includes a 400-character excerpt of the problem statement. The rules ask for at least two questions on the weakest topics and a line-level walk-through of their own coding solution (approach, complexity, failed cases) to cross-check that they understand it.
 
 ## Non-goals

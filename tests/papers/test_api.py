@@ -742,3 +742,105 @@ def test_send_emails_only_newly_sent_students_that_their_test_is_ready(db, monke
     c.post(f"{BASE}/drafts/{did}/send", json={"candidate_refs": [str(a), str(b)]})
     assert asked == [(round_one, [a], True), (round_one, [b], True)]  # a isn't emailed twice
     assert len(sent) == 2
+
+
+# --- regenerate one question ---
+
+
+class FakeLlm:
+    def __init__(self, *replies):
+        self.replies, self.prompts = list(replies), []
+
+    async def complete_json(self, *, system, user):
+        self.prompts.append(user)
+        return self.replies.pop(0)
+
+
+def use_llm(monkeypatch, *replies) -> FakeLlm:
+    fake = FakeLlm(*replies)
+    monkeypatch.setattr(service, "llm_client", lambda temperature=0.0: fake)
+    return fake
+
+
+NEW_MCQ = {
+    "text": "Brand new question?",
+    "options": ["n1", "n2", "n3", "n4"],
+    "answer": 3,
+    "why": "Because new.",
+    "topic": "t",
+}
+
+
+def first(db, did, section):
+    return next(q for q in db["drafts"][did]["pool"] if q["section"] == section)
+
+
+def regen(did, qid, user=HR, **body):
+    return as_user(user).post(f"{BASE}/drafts/{did}/questions/{qid}/regenerate", json=body)
+
+
+def test_regenerate_technical_replaces_in_place_with_new_why(db, monkeypatch):
+    did = seed_draft(db)
+    old = first(db, did, "technical")
+    fake = use_llm(monkeypatch, {"questions": [NEW_MCQ]})
+    r = regen(did, old["id"], reason=" too easy ")
+    assert r.status_code == 200, r.text
+    new = next(q for q in db["drafts"][did]["pool"] if q["id"] == old["id"])
+    assert new["text"] == "Brand new question?" and new["why"] == "Because new."
+    assert new["answer"] == 3 and new["selected"] is True and new["edited"] is False
+    assert new["verified"] is False and new["level"] == old["level"]
+    assert len(db["drafts"][did]["pool"]) == 20
+    assert "too easy" in fake.prompts[0] and old["text"] in fake.prompts[0]
+    _, action, _, diff = db["audits"][-1]
+    assert action == "paper_draft.question_regenerate" and diff["reason"] == "too easy"
+    assert diff["from"]["text"] == old["text"] and diff["to"]["why"] == "Because new."
+    assert db["reads"][-1] == (did, True) and db["session"].commits == 1
+
+
+@pytest.mark.parametrize("section", ["aptitude", "reasoning"])
+def test_regenerate_coded_section_needs_no_ai(db, monkeypatch, section):
+    did = seed_draft(db)
+    old = first(db, did, section)
+    monkeypatch.setattr(service, "llm_client", lambda **_: pytest.fail("no AI for " + section))
+    assert regen(did, old["id"]).status_code == 200
+    new = next(q for q in db["drafts"][did]["pool"] if q["id"] == old["id"])
+    assert new["text"] != old["text"] and new["why"] and new["section"] == section
+    assert new["level"] == old["level"] and new["selected"] is True
+
+
+def test_regenerate_keeps_deselected_question_deselected(db):
+    settings = PaperSettings.model_validate(SETTINGS)
+    pool = make_pool(settings)
+    pool[0] = pool[0].model_copy(update={"selected": False})
+    did = seed_draft(db, pool=pool)
+    assert regen(did, pool[0].id).status_code == 200
+    assert db["drafts"][did]["pool"][0]["selected"] is False
+
+
+def test_regenerate_gives_up_after_bad_ai_output(db, monkeypatch):
+    did = seed_draft(db)
+    old = first(db, did, "technical")
+    before = [dict(q) for q in db["drafts"][did]["pool"]]
+    use_llm(monkeypatch, {"questions": []}, {"questions": [{**NEW_MCQ, "text": old["text"]}]})
+    r = regen(did, old["id"])
+    assert r.status_code == 502 and r.json()["error"]["code"] == "REGENERATE_FAILED"
+    assert db["drafts"][did]["pool"] == before and db["audits"] == []
+
+
+@pytest.mark.parametrize("status", ["accepted", "generating", "failed"])
+def test_regenerate_only_while_draft(db, status):
+    did = seed_draft(db, status=status)
+    r = regen(did, db["drafts"][did]["pool"][0]["id"])
+    assert r.status_code == 409 and r.json()["error"]["code"] == "NOT_EDITABLE"
+
+
+def test_regenerate_unknown_question_and_other_owner_404(db):
+    did = seed_draft(db)
+    assert regen(did, "nope").json()["error"]["code"] == "QUESTION_NOT_FOUND"
+    assert regen(did, db["drafts"][did]["pool"][0]["id"], user=HR2).status_code == 404
+
+
+def test_regenerate_reason_length_validated(db):
+    did = seed_draft(db)
+    r = regen(did, db["drafts"][did]["pool"][0]["id"], reason="x" * 301)
+    assert r.status_code == 422

@@ -48,35 +48,10 @@ ANSWER_BOX_TOOL: dict = {
     },
 }
 
-# Function the model calls when it notices something HR should check (Live API tool). Advisory only:
-# the browser stores it as a "flag" turn in the transcript, nothing is decided automatically.
-FLAG_TOOL: dict = {
-    "name": "flag_concern",
-    "description": (
-        "Records a note for HR when you notice a possible integrity issue during the interview, "
-        "for example a second voice prompting or answering for the candidate. HR checks it."
-    ),
-    "parameters": {
-        "type": "OBJECT",
-        "properties": {
-            "kind": {
-                "type": "STRING",
-                "enum": ["multiple_voices"],
-                "description": "multiple_voices: you hear more than one person speaking",
-            },
-            "note": {
-                "type": "STRING",
-                "description": "One short sentence on what you heard, e.g. a second voice read "
-                "out an answer.",
-            },
-        },
-        "required": ["kind", "note"],
-    },
-}
-TOOLS: tuple[dict, ...] = (ANSWER_BOX_TOOL, FLAG_TOOL)
+TOOLS: tuple[dict, ...] = (ANSWER_BOX_TOOL,)
 
 # Always appended after the (possibly admin-overridden) prompt, so these rules can't be lost by an
-# override: English only, one written question at a time, and the integrity flag.
+# override: English only, one written question at a time.
 PLATFORM_RULES = (
     "\nPlatform rules (always apply, they override anything above):\n"
     "- Language: speak ONLY English for the whole interview, every turn, even if the candidate "
@@ -90,10 +65,10 @@ PLATFORM_RULES = (
     "stuck, ask them to type what they have, even if it is partial, and submit it. Only after "
     "you have reviewed the submitted answer with them may you move on.\n"
     "- Never give or describe a full or alternative solution, before or after they submit.\n"
-    "- Integrity: if you clearly hear a second person speaking (prompting, whispering or "
-    "answering for the candidate), call flag_concern with kind multiple_voices and a short "
-    "note, then calmly ask the candidate to make sure they are alone and continue. Do it once "
-    "per incident, do not accuse them, and never mention flags or HR notes aloud.\n"
+    "- Unclear audio: if what you hear is very short, unclear, or sounds like background noise, "
+    "typing or your own voice, do not answer it and do not comment on it (never say the "
+    "connection dropped or that they were cut off). Keep waiting; only if they clearly said "
+    "something you missed, ask them once to repeat it.\n"
     "- Messages starting with " + SYSTEM_TAG + " come from the platform; follow them silently.\n"
 )
 
@@ -132,7 +107,9 @@ DEFAULT_PROMPTS: dict[str, str] = {
         "starting with " + TYPED_PREFIX + ". Read it carefully and check it: is it correct, "
         "complete and efficient? Ask them to walk you through it, point to the part that has a "
         "problem as a hint (for example: what happens with an empty input?), and let them fix it "
-        "in the box. Do not write the correct answer for them.\n"
+        "in the box: it stays available after they submit, and a fixed version arrives as a new "
+        "message starting with " + TYPED_PREFIX + " marked (revised). Do not write the correct "
+        "answer for them.\n"
         "\n"
         "Rules:\n"
         "- Never reveal scores or hiring judgements. Never give the candidate the full "
@@ -157,9 +134,6 @@ DEFAULT_PROMPTS: dict[str, str] = {
         "- technical_depth: correctness and depth of knowledge for the role.\n"
         "- problem_solving: approach to the problem, reasoning, use of hints, trade-offs.\n"
         "- culture: ownership, collaboration, curiosity, professionalism.\n"
-        "Lines marked PLATFORM FLAG are unverified observations by the AI interviewer (for "
-        "example a possible second voice): list them in the summary for HR to check, but do not "
-        "lower any score because of a flag alone.\n"
         "Typed answers (code or written) are marked as such: check them for correctness, edge "
         "cases and efficiency; they weigh on technical_depth and problem_solving. Credit fixes the "
         "candidate made after a hint, but less than getting it right first.\n"
@@ -357,8 +331,6 @@ def _line(t: Mapping) -> str:
     kind = t.get("kind")
     if kind == "question":
         return f"INTERVIEWER (written question shown on screen): {t.get('text', '')}"
-    if kind == "flag":
-        return f"PLATFORM FLAG (AI-detected, unverified): {t.get('text', '')}"
     if kind == "typed":
         lang = f", {t['language']}" if t.get("language") else ""
         return f"CANDIDATE (typed answer{lang}):\n```\n{t.get('text', '')}\n```"

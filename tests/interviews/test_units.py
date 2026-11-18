@@ -74,7 +74,8 @@ async def test_token_request_locks_config_and_keeps_key_in_header(key):
     assert cfg["systemInstruction"] == {"parts": [{"text": "BE AN INTERVIEWER"}]}
     gen = cfg["generationConfig"]
     assert gen["responseModalities"] == ["AUDIO"] and "responseModalities" not in cfg
-    assert cfg["inputAudioTranscription"] == {} and cfg["outputAudioTranscription"] == {}
+    assert cfg["inputAudioTranscription"] == {"languageCodes": ["en-IN", "en-US"]}
+    assert cfg["outputAudioTranscription"] == {}
     assert cfg["contextWindowCompression"] == {"slidingWindow": {}}
     assert cfg["sessionResumption"] == {}
     assert gen["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Kore"
@@ -279,9 +280,7 @@ async def test_token_config_declares_the_answer_box_tool(key):
     decl = tools[0]["functionDeclarations"][0]
     assert decl["name"] == "show_answer_box"
     assert decl["parameters"]["required"] == ["question", "mode"]
-    flag = tools[0]["functionDeclarations"][1]
-    assert flag["name"] == "flag_concern"
-    assert flag["parameters"]["properties"]["kind"]["enum"] == ["multiple_voices"]
+    assert len(tools[0]["functionDeclarations"]) == 1
 
 
 def test_prompt_explains_the_answer_box_and_adds_reference_only_when_given():
@@ -370,16 +369,7 @@ def test_platform_rules_always_close_the_prompt_even_with_an_override():
         assert "speak ONLY English" in text
         assert "WAIT for the candidate's typed answer" in text and prompts.TYPED_PREFIX in text
         assert "do not call show_answer_box again" in text
-        assert "flag_concern" in text and "multiple_voices" in text
-
-
-def test_flags_reach_the_scorer_as_unverified_and_are_not_scored_down():
-    out = prompts.format_transcript(
-        [{"role": "ai", "kind": "flag", "text": "multiple_voices: a second voice read an answer"}]
-    )
-    assert "PLATFORM FLAG (AI-detected, unverified): multiple_voices" in out
-    scorer = prompts.DEFAULT_PROMPTS[prompts.PROMPT_EVAL]
-    assert "do not lower any score because of a flag alone" in scorer
+        assert "flag_concern" not in text
 
 
 def test_history_brief_lists_missed_questions_weakest_first_and_the_problem_statement():
